@@ -98,4 +98,54 @@ final class StoreBasicsTests: XCTestCase {
         let limited = try await items.scan(limit: 2).map { $0.id }
         XCTAssertEqual(limited, [1, 3])
     }
+
+    func test_unique_index_lookup_and_snapshot() async throws {
+        struct User: Codable, Identifiable, Equatable {
+            var id: UUID
+            var email: String
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let users = await store.collection("users", of: User.self)
+        try await users.define(.init(name: "byEmail", kind: .unique(\User.email)))
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000010")!
+        let original = User(id: id, email: "a@example.com")
+        try await users.put(original)
+        let snap = await store.snapshot()
+        var updated = original
+        updated.email = "b@example.com"
+        try await users.put(updated)
+        let currentA = try await users.byIndex("byEmail", equals: "a@example.com")
+        XCTAssertTrue(currentA.isEmpty)
+        let currentB = try await users.byIndex("byEmail", equals: "b@example.com")
+        XCTAssertEqual(currentB, [updated])
+        let snapA = try await users.byIndex("byEmail", equals: "a@example.com", snapshot: snap)
+        XCTAssertEqual(snapA, [original])
+        try await users.delete(id: id)
+        let afterDel = try await users.byIndex("byEmail", equals: "b@example.com")
+        XCTAssertTrue(afterDel.isEmpty)
+    }
+
+    func test_multi_index_lookup() async throws {
+        struct Doc: Codable, Identifiable, Equatable {
+            var id: Int
+            var tag: String
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let docs = await store.collection("docs", of: Doc.self)
+        try await docs.define(.init(name: "byTag", kind: .multi(\Doc.tag)))
+        try await docs.put(.init(id: 1, tag: "a"))
+        try await docs.put(.init(id: 2, tag: "a"))
+        try await docs.put(.init(id: 3, tag: "b"))
+        let snap = await store.snapshot()
+        try await docs.delete(id: 1)
+        try await docs.put(.init(id: 2, tag: "b"))
+        let currentA = try await docs.byIndex("byTag", equals: "a").map { $0.id }
+        XCTAssertEqual(currentA, [])
+        let currentB = try await docs.byIndex("byTag", equals: "b").map { $0.id }.sorted()
+        XCTAssertEqual(currentB, [2, 3])
+        let snapA = try await docs.byIndex("byTag", equals: "a", snapshot: snap).map { $0.id }.sorted()
+        XCTAssertEqual(snapA, [1, 2])
+    }
 }
