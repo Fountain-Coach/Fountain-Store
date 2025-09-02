@@ -13,6 +13,9 @@
 - Unique index enforcement
 - Snapshot repeatability
 
+## Observability
+- Operation metrics counters
+
 ## Performance (later)
 - Write amplification tracking
 - Bloom false‑positive sampling
