@@ -69,6 +69,22 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     public let name: String
     private let store: FountainStore
     private var data: [C.ID: [(UInt64, C?)]] = [:]
+    
+    private enum IndexStorage {
+        final class Unique {
+            let keyPath: KeyPath<C, String>
+            var map: [String: [(UInt64, C.ID?)]] = [:]
+            init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
+        }
+        final class Multi {
+            let keyPath: KeyPath<C, String>
+            var map: [String: [(UInt64, [C.ID])]] = [:]
+            init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
+        }
+        case unique(Unique)
+        case multi(Multi)
+    }
+    private var indexes: [String: IndexStorage] = [:]
 
     public init(name: String, store: FountainStore) {
         self.name = name
@@ -76,12 +92,60 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func define(_ index: Index<C>) async throws {
-        // TODO: register index in manifest and create structures.
+        switch index.kind {
+        case .unique(let path):
+            guard let kp = path as? KeyPath<C, String> else { return }
+            let idx = IndexStorage.Unique(keyPath: kp)
+            for (id, versions) in data {
+                guard let (seq, val) = versions.last, let v = val else { continue }
+                let key = v[keyPath: kp]
+                idx.map[key, default: []].append((seq, id))
+            }
+            indexes[index.name] = .unique(idx)
+        case .multi(let path):
+            guard let kp = path as? KeyPath<C, String> else { return }
+            let idx = IndexStorage.Multi(keyPath: kp)
+            for (id, versions) in data {
+                guard let (seq, val) = versions.last, let v = val else { continue }
+                let key = v[keyPath: kp]
+                var arr = idx.map[key]?.last?.1 ?? []
+                arr.append(id)
+                idx.map[key, default: []].append((seq, arr))
+            }
+            indexes[index.name] = .multi(idx)
+        }
     }
 
     public func put(_ value: C) async throws {
         let seq = await store.nextSequence()
+        let old = data[value.id]?.last?.1
         data[value.id, default: []].append((seq, value))
+        for storage in indexes.values {
+            switch storage {
+            case .unique(let idx):
+                let key = value[keyPath: idx.keyPath]
+                if let old = old {
+                    let oldKey = old[keyPath: idx.keyPath]
+                    if oldKey != key {
+                        idx.map[oldKey, default: []].append((seq, nil))
+                    }
+                }
+                idx.map[key, default: []].append((seq, value.id))
+            case .multi(let idx):
+                let key = value[keyPath: idx.keyPath]
+                if let old = old {
+                    let oldKey = old[keyPath: idx.keyPath]
+                    if oldKey != key {
+                        var oldArr = idx.map[oldKey]?.last?.1 ?? []
+                        if let pos = oldArr.firstIndex(of: value.id) { oldArr.remove(at: pos) }
+                        idx.map[oldKey, default: []].append((seq, oldArr))
+                    }
+                }
+                var arr = idx.map[key]?.last?.1 ?? []
+                if !arr.contains(value.id) { arr.append(value.id) }
+                idx.map[key, default: []].append((seq, arr))
+            }
+        }
     }
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
@@ -98,11 +162,41 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func delete(id: C.ID) async throws {
         let seq = await store.nextSequence()
+        let old = data[id]?.last?.1
         data[id, default: []].append((seq, nil))
+        guard let oldVal = old else { return }
+        for storage in indexes.values {
+            switch storage {
+            case .unique(let idx):
+                let key = oldVal[keyPath: idx.keyPath]
+                idx.map[key, default: []].append((seq, nil))
+            case .multi(let idx):
+                let key = oldVal[keyPath: idx.keyPath]
+                var arr = idx.map[key]?.last?.1 ?? []
+                if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
+                idx.map[key, default: []].append((seq, arr))
+            }
+        }
     }
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
-        return []
+        guard let storage = indexes[name] else { return [] }
+        let limit = snapshot?.sequence ?? UInt64.max
+        switch storage {
+        case .unique(let idx):
+            guard let versions = idx.map[key],
+                  let id = versions.last(where: { $0.0 <= limit })?.1 else { return [] }
+            if let val = try await get(id: id, snapshot: snapshot) { return [val] }
+            return []
+        case .multi(let idx):
+            guard let versions = idx.map[key],
+                  let ids = versions.last(where: { $0.0 <= limit })?.1 else { return [] }
+            var res: [C] = []
+            for id in ids {
+                if let val = try await get(id: id, snapshot: snapshot) { res.append(val) }
+            }
+            return res
+        }
     }
 
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
