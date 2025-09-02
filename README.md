@@ -1,7 +1,7 @@
 
 # FountainStore
 
-**Status:** scaffold / bootstrap — ready for Codex-driven implementation.
+**Status:** Milestone M3 — transactions & indexes underway; core KV, snapshots, and indexing features implemented.
 
 FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI.
 It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,

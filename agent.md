@@ -33,18 +33,18 @@
 
 ## Milestones & PR Breakdown
 
-**M0 — Package Skeleton (you are here)**
+**M0 — Package Skeleton** ✅
 - Compile‑clean placeholders; tests compile but are pending.
 
-**M1 — KV Core**
+**M1 — KV Core** ✅
 - WAL append+fsync with CRC; Memtable (sorted in‑memory map); SSTable read path.
 - Crash recovery: rebuild from WAL; manifest create/load; basic get/put/delete.
 
-**M2 — Compaction & Snapshots**
+**M2 — Compaction & Snapshots** ✅
 - Flush memtable to SSTable; background compaction; MVCC snapshots (sequence IDs).
 - Range scans and prefix scans.
 
-**M3 — Transactions & Indexes**
+**M3 — Transactions & Indexes (you are here)**
 - Atomic multi‑put/delete batches with a sequence boundary.
 - Unique and multi‑value secondary indexes; index scans.
 
