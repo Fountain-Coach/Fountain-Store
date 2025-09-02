@@ -68,7 +68,7 @@ public actor FountainStore {
 public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashable {
     public let name: String
     private let store: FountainStore
-    private var data: [C.ID: (UInt64, C?)] = [:]
+    private var data: [C.ID: [(UInt64, C?)]] = [:]
 
     public init(name: String, store: FountainStore) {
         self.name = name
@@ -81,20 +81,18 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func put(_ value: C) async throws {
         let seq = await store.nextSequence()
-        data[value.id] = (seq, value)
+        data[value.id, default: []].append((seq, value))
     }
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
-        guard let (seq, val) = data[id] else { return nil }
-        if let snap = snapshot, seq > snap.sequence {
-            return nil
-        }
-        return val
+        guard let versions = data[id] else { return nil }
+        let limit = snapshot?.sequence ?? UInt64.max
+        return versions.last(where: { $0.0 <= limit })?.1
     }
 
     public func delete(id: C.ID) async throws {
         let seq = await store.nextSequence()
-        data[id] = (seq, nil)
+        data[id, default: []].append((seq, nil))
     }
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
