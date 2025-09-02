@@ -58,8 +58,13 @@ public actor FountainStore {
     private var sequence: UInt64 = 0
 
     fileprivate func nextSequence() -> UInt64 {
-        sequence &+= 1
-        return sequence
+        allocateSequences(1)
+    }
+
+    fileprivate func allocateSequences(_ count: Int) -> UInt64 {
+        let start = sequence &+ 1
+        sequence &+= UInt64(count)
+        return start
     }
 
     private init(options: StoreOptions) { self.options = options }
@@ -91,6 +96,11 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         self.store = store
     }
 
+    public enum BatchOp {
+        case put(C)
+        case delete(C.ID)
+    }
+
     public func define(_ index: Index<C>) async throws {
         switch index.kind {
         case .unique(let path):
@@ -116,8 +126,28 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
-    public func put(_ value: C) async throws {
-        let seq = await store.nextSequence()
+    public func batch(_ ops: [BatchOp]) async throws {
+        guard !ops.isEmpty else { return }
+        let start = await store.allocateSequences(ops.count)
+        var seq = start
+        for op in ops {
+            switch op {
+            case .put(let v):
+                try await put(v, sequence: seq)
+            case .delete(let id):
+                try await delete(id: id, sequence: seq)
+            }
+            seq &+= 1
+        }
+    }
+
+    public func put(_ value: C, sequence: UInt64? = nil) async throws {
+        let seq: UInt64
+        if let s = sequence {
+            seq = s
+        } else {
+            seq = await store.nextSequence()
+        }
         let old = data[value.id]?.last?.1
         data[value.id, default: []].append((seq, value))
         for storage in indexes.values {
@@ -160,8 +190,13 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return versions.filter { $0.0 <= limit }
     }
 
-    public func delete(id: C.ID) async throws {
-        let seq = await store.nextSequence()
+    public func delete(id: C.ID, sequence: UInt64? = nil) async throws {
+        let seq: UInt64
+        if let s = sequence {
+            seq = s
+        } else {
+            seq = await store.nextSequence()
+        }
         let old = data[id]?.last?.1
         data[id, default: []].append((seq, nil))
         guard let oldVal = old else { return }
