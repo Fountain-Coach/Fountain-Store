@@ -90,6 +90,12 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return versions.last(where: { $0.0 <= limit })?.1
     }
 
+    public func history(id: C.ID, snapshot: Snapshot? = nil) async throws -> [(UInt64, C?)] {
+        guard let versions = data[id] else { return [] }
+        let limit = snapshot?.sequence ?? UInt64.max
+        return versions.filter { $0.0 <= limit }
+    }
+
     public func delete(id: C.ID) async throws {
         let seq = await store.nextSequence()
         data[id, default: []].append((seq, nil))

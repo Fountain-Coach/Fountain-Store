@@ -53,4 +53,22 @@ final class StoreBasicsTests: XCTestCase {
         XCTAssertNil(current)
         XCTAssertEqual(snapValue, note)
     }
+
+    func test_history_tracking() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let notes = await store.collection("notes", of: Note.self)
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let v1 = Note(id: id, title: "t1", body: "b1")
+        try await notes.put(v1)
+        var v2 = v1; v2.body = "b2"
+        try await notes.put(v2)
+        let snap = await store.snapshot()
+        try await notes.delete(id: id)
+        let all = try await notes.history(id: id)
+        XCTAssertEqual(all.map { $0.1 }, [v1, v2, nil])
+        XCTAssertEqual(all.map { $0.0 }, [1, 2, 3])
+        let snapHist = try await notes.history(id: id, snapshot: snap)
+        XCTAssertEqual(snapHist.map { $0.1 }, [v1, v2])
+    }
 }
