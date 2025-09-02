@@ -3,6 +3,7 @@
 
 ## Core
 - Put/Get/Delete round trips
+- MVCC history retrieval
 - Range/prefix scans
 - Crash recovery matrix (kill at WAL append, after append before fsync, after fsync before memtable apply, etc.)
 - Manifest integrity
