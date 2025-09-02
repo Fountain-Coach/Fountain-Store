@@ -22,6 +22,16 @@ public struct Snapshot: Sendable, Hashable {
     public init(sequence: UInt64) { self.sequence = sequence }
 }
 
+public struct Metrics: Sendable, Hashable {
+    public var puts: UInt64 = 0
+    public var gets: UInt64 = 0
+    public var deletes: UInt64 = 0
+    public var scans: UInt64 = 0
+    public var indexLookups: UInt64 = 0
+    public var batches: UInt64 = 0
+    public init() {}
+}
+
 public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
@@ -56,6 +66,7 @@ public actor FountainStore {
     // MARK: - Internals
     private let options: StoreOptions
     private var sequence: UInt64 = 0
+    private var metrics = Metrics()
 
     fileprivate func nextSequence() -> UInt64 {
         allocateSequences(1)
@@ -65,6 +76,31 @@ public actor FountainStore {
         let start = sequence &+ 1
         sequence &+= UInt64(count)
         return start
+    }
+
+    public func metricsSnapshot() -> Metrics {
+        metrics
+    }
+
+    internal enum Metric {
+        case put, get, delete, scan, indexLookup, batch
+    }
+
+    internal func record(_ metric: Metric, _ count: UInt64 = 1) {
+        switch metric {
+        case .put:
+            metrics.puts &+= count
+        case .get:
+            metrics.gets &+= count
+        case .delete:
+            metrics.deletes &+= count
+        case .scan:
+            metrics.scans &+= count
+        case .indexLookup:
+            metrics.indexLookups &+= count
+        case .batch:
+            metrics.batches &+= count
+        }
     }
 
     private init(options: StoreOptions) { self.options = options }
@@ -128,6 +164,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func batch(_ ops: [BatchOp]) async throws {
         guard !ops.isEmpty else { return }
+        await store.record(.batch)
         let start = await store.allocateSequences(ops.count)
         var seq = start
         for op in ops {
@@ -142,6 +179,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func put(_ value: C, sequence: UInt64? = nil) async throws {
+        await store.record(.put)
         let seq: UInt64
         if let s = sequence {
             seq = s
@@ -179,6 +217,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
+        await store.record(.get)
         guard let versions = data[id] else { return nil }
         let limit = snapshot?.sequence ?? UInt64.max
         return versions.last(where: { $0.0 <= limit })?.1
@@ -191,6 +230,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func delete(id: C.ID, sequence: UInt64? = nil) async throws {
+        await store.record(.delete)
         let seq: UInt64
         if let s = sequence {
             seq = s
@@ -215,6 +255,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
+        await store.record(.indexLookup)
         guard let storage = indexes[name] else { return [] }
         let limit = snapshot?.sequence ?? UInt64.max
         switch storage {
@@ -235,6 +276,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
+        await store.record(.scan)
         // Collect latest visible version for each key and filter by prefix.
         let encoder = JSONEncoder()
         let seqLimit = snapshot?.sequence ?? UInt64.max
