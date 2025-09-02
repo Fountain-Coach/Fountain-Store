@@ -23,7 +23,7 @@ public struct Snapshot: Sendable, Hashable {
 }
 
 public struct Index<C>: Sendable {
-    public enum Kind {
+    public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
         case multi(PartialKeyPath<C>)
     }
@@ -46,50 +46,62 @@ public actor FountainStore {
     }
 
     public func snapshot() -> Snapshot {
-        // Placeholder until MVCC is implemented.
-        return Snapshot(sequence: 0)
+        return Snapshot(sequence: sequence)
     }
 
     public func collection<C: Codable & Identifiable>(_ name: String, of: C.Type) -> Collection<C> {
-        return Collection<C>(name: name)
+        return Collection<C>(name: name, store: self)
     }
 
     // MARK: - Internals
     private let options: StoreOptions
+    private var sequence: UInt64 = 0
+
+    fileprivate func nextSequence() -> UInt64 {
+        sequence &+= 1
+        return sequence
+    }
+
     private init(options: StoreOptions) { self.options = options }
 }
 
-public actor Collection<C: Codable & Identifiable> where C.ID: Codable {
+public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashable {
     public let name: String
-    public init(name: String) { self.name = name }
+    private let store: FountainStore
+    private var data: [C.ID: (UInt64, C?)] = [:]
+
+    public init(name: String, store: FountainStore) {
+        self.name = name
+        self.store = store
+    }
 
     public func define(_ index: Index<C>) async throws {
         // TODO: register index in manifest and create structures.
-        // For now, placeholder.
     }
 
     public func put(_ value: C) async throws {
-        // TODO: WAL append + memtable apply.
-        fatalError("Unimplemented: put")
+        let seq = await store.nextSequence()
+        data[value.id] = (seq, value)
     }
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
-        // TODO: probe memtable + SSTables using MVCC snapshot if provided.
-        return nil
+        guard let (seq, val) = data[id] else { return nil }
+        if let snap = snapshot, seq > snap.sequence {
+            return nil
+        }
+        return val
     }
 
     public func delete(id: C.ID) async throws {
-        // TODO: tombstone in WAL and memtable.
-        fatalError("Unimplemented: delete")
+        let seq = await store.nextSequence()
+        data[id] = (seq, nil)
     }
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
-        // TODO: lookup in secondary index collection.
         return []
     }
 
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
-        // TODO: ordered iteration across memtable + SSTables.
         return []
     }
 }
