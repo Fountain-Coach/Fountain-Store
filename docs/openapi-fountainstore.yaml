@@ -1,0 +1,641 @@
+
+openapi: 3.1.0
+info:
+  title: FountainStore API
+  version: 0.1.0
+  summary: Pure‑Swift embedded store — optional HTTP surface for admin, queries, and maintenance.
+  description: |
+    This API exposes administrative and query endpoints for the **FountainStore** pure‑Swift
+    persistence engine. The primary integration is as a SwiftPM library; this HTTP layer is
+    optional and intended for orchestration, observability, and external tooling.
+
+    **Key Concepts**
+    - **Collection**: a named logical namespace of records (documents).
+    - **Record**: an application-defined JSON payload with a string `id`.
+    - **Index**: a secondary index derived from record fields (unique or multi-value).
+    - **Snapshot**: a consistent read view at a particular sequence number.
+    - **Transaction**: an atomic batch of operations across one or more collections.
+
+    **Stability Note**
+    This spec is designed for iterative expansion alongside the engine milestones (M1–M5).
+    Backwards-compatible growth is prioritized; breaking changes should rev the `version`.
+servers:
+  - url: https://localhost:8080/v1
+    description: Local development
+tags:
+  - name: Health
+  - name: Store
+  - name: Collections
+  - name: Records
+  - name: Queries
+  - name: Transactions
+  - name: Snapshots
+  - name: Indexes
+  - name: Compaction
+  - name: Backups
+  - name: Metrics
+security:
+  - ApiKeyAuth: []
+  - {}
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness and readiness probe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /status:
+    get:
+      tags: [Store]
+      summary: Store status overview
+      description: Return high-level status including sequence numbers and collection list.
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreStatus'
+  /collections:
+    get:
+      tags: [Collections]
+      summary: List collections
+      responses:
+        '200':
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CollectionRef'
+    post:
+      tags: [Collections]
+      summary: Create a collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionRef'
+        '409':
+          description: Already exists
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /collections/{collection}:
+    parameters:
+      - $ref: '#/components/parameters/collection'
+    get:
+      tags: [Collections]
+      summary: Get collection details
+      responses:
+        '200':
+          description: Collection details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          description: Not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    delete:
+      tags: [Collections]
+      summary: Drop a collection
+      responses:
+        '204': { description: Dropped }
+        '404':
+          description: Not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /collections/{collection}/indexes:
+    parameters:
+      - $ref: '#/components/parameters/collection'
+    get:
+      tags: [Indexes]
+      summary: List indexes on a collection
+      responses:
+        '200':
+          description: Index list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/IndexDefinition' }
+    post:
+      tags: [Indexes]
+      summary: Define an index on a collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IndexDefinition' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IndexDefinition' }
+        '409':
+          description: Index exists or unique conflict
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /collections/{collection}/records/{id}:
+    parameters:
+      - $ref: '#/components/parameters/collection'
+      - $ref: '#/components/parameters/id'
+      - $ref: '#/components/parameters/snapshotIdOptional'
+    put:
+      tags: [Records]
+      summary: Upsert a record by ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Record' }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } } }
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } } }
+        '409': { description: Unique index conflict, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
+    get:
+      tags: [Records]
+      summary: Fetch a record by ID
+      responses:
+        '200':
+          description: Record
+          content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } }
+        '404':
+          description: Not found
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    delete:
+      tags: [Records]
+      summary: Delete a record by ID
+      responses:
+        '204': { description: Deleted }
+        '404':
+          description: Not found
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+  /collections/{collection}/query:
+    parameters:
+      - $ref: '#/components/parameters/collection'
+      - $ref: '#/components/parameters/snapshotIdOptional'
+    post:
+      tags: [Queries]
+      summary: Query a collection (byId, index, prefix/range scan)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Query' }
+      responses:
+        '200':
+          description: Query result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResponse' }
+  /transactions:
+    post:
+      tags: [Transactions]
+      summary: Commit an atomic batch of operations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Transaction' }
+      responses:
+        '200':
+          description: Commit result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionResult' }
+        '409':
+          description: Conflict (e.g., unique index violation)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /snapshots:
+    post:
+      tags: [Snapshots]
+      summary: Create a read snapshot
+      responses:
+        '201':
+          description: Snapshot created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Snapshot' }
+  /snapshots/{snapshotId}:
+    parameters:
+      - $ref: '#/components/parameters/snapshotId'
+    delete:
+      tags: [Snapshots]
+      summary: Release a snapshot
+      responses:
+        '204': { description: Released }
+        '404':
+          description: Not found
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+  /compaction/status:
+    get:
+      tags: [Compaction]
+      summary: Compaction status
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompactionStatus' }
+  /compaction/run:
+    post:
+      tags: [Compaction]
+      summary: Trigger a compaction tick or full compaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [tick, full]
+                  default: tick
+      responses:
+        '202': { description: Compaction scheduled }
+  /backups:
+    get:
+      tags: [Backups]
+      summary: List backups
+      responses:
+        '200':
+          description: Backups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BackupRef' }
+    post:
+      tags: [Backups]
+      summary: Create a backup
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BackupRef' }
+  /backups/{backupId}/restore:
+    parameters:
+      - $ref: '#/components/parameters/backupId'
+    post:
+      tags: [Backups]
+      summary: Restore from a backup
+      responses:
+        '202': { description: Restore scheduled }
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: Export counters and gauges
+      description: Returns a simple JSON metrics snapshot suitable for dashboards.
+      responses:
+        '200':
+          description: Metrics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Metrics' }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+    HttpBearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    collection:
+      name: collection
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-zA-Z0-9._-]{1,128}$" }
+      description: Collection name.
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 512 }
+      description: Record identifier.
+    snapshotId:
+      name: snapshotId
+      in: path
+      required: true
+      schema: { type: string }
+    snapshotIdOptional:
+      name: snapshot
+      in: query
+      required: false
+      schema: { type: string }
+      description: Optional snapshot id for consistent reads.
+    backupId:
+      name: backupId
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 7807 problem details
+      properties:
+        type: { type: string, format: uri, default: "about:blank" }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+      required: [title, status]
+
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, starting, unhealthy] }
+        engine:
+          type: object
+          properties:
+            sequence: { type: integer, format: int64 }
+            writable: { type: boolean }
+            lastFlushMs: { type: integer }
+      required: [status]
+
+    StoreStatus:
+      type: object
+      properties:
+        sequence: { type: integer, format: int64 }
+        collectionsCount: { type: integer }
+        collections:
+          type: array
+          items: { $ref: '#/components/schemas/CollectionRef' }
+        compaction:
+          $ref: '#/components/schemas/CompactionStatus'
+      required: [sequence, collectionsCount, collections]
+
+    CollectionRef:
+      type: object
+      properties:
+        name: { type: string }
+        version: { type: string, description: "User-defined schema version for the collection." }
+        recordsApprox: { type: integer, minimum: 0 }
+      required: [name]
+
+    Collection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionRef'
+        - type: object
+          properties:
+            indexes:
+              type: array
+              items: { $ref: '#/components/schemas/IndexDefinition' }
+
+    CreateCollectionRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        version: { type: string, nullable: true }
+
+    IndexDefinition:
+      type: object
+      required: [name, kind, keyPath]
+      properties:
+        name: { type: string }
+        kind:
+          type: string
+          enum: [unique, multi]
+        keyPath:
+          type: string
+          description: Swift key path (e.g., \\.title or \\.tags[]). Client responsibility to map to JSON path.
+        options:
+          type: object
+          additionalProperties: true
+
+    AnyJSON:
+      description: Arbitrary JSON value.
+      oneOf:
+        - type: object
+          additionalProperties:
+            $ref: '#/components/schemas/AnyJSON'
+        - type: array
+          items:
+            $ref: '#/components/schemas/AnyJSON'
+        - type: string
+        - type: number
+        - type: integer
+        - type: boolean
+        - type: 'null'
+
+    Record:
+      type: object
+      required: [id, data]
+      properties:
+        id: { type: string }
+        data: { $ref: '#/components/schemas/AnyJSON' }
+        version: { type: string, nullable: true, description: "Application-level schema version." }
+        sequence: { type: integer, format: int64, readOnly: true }
+        deleted: { type: boolean, readOnly: true, default: false }
+
+    Query:
+      oneOf:
+        - $ref: '#/components/schemas/ByIdQuery'
+        - $ref: '#/components/schemas/IndexEqualsQuery'
+        - $ref: '#/components/schemas/ScanQuery'
+      discriminator:
+        propertyName: type
+        mapping:
+          byId: '#/components/schemas/ByIdQuery'
+          indexEquals: '#/components/schemas/IndexEqualsQuery'
+          scan: '#/components/schemas/ScanQuery'
+
+    ByIdQuery:
+      type: object
+      required: [type, id]
+      properties:
+        type: { const: byId }
+        id: { type: string }
+
+    IndexEqualsQuery:
+      type: object
+      required: [type, index, key]
+      properties:
+        type: { const: indexEquals }
+        index: { type: string }
+        key: { type: string }
+        pageSize: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        pageToken: { type: string, nullable: true }
+
+    ScanQuery:
+      type: object
+      required: [type]
+      properties:
+        type: { const: scan }
+        prefix: { type: string, nullable: true }
+        startAfter: { type: string, nullable: true, description: "Exclusive start key." }
+        limit: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
+    QueryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Record' }
+        nextPageToken: { type: string, nullable: true }
+
+    Operation:
+      oneOf:
+        - $ref: '#/components/schemas/PutOp'
+        - $ref: '#/components/schemas/DeleteOp'
+        - $ref: '#/components/schemas/DefineIndexOp'
+      discriminator:
+        propertyName: op
+        mapping:
+          put: '#/components/schemas/PutOp'
+          delete: '#/components/schemas/DeleteOp'
+          defineIndex: '#/components/schemas/DefineIndexOp'
+
+    PutOp:
+      type: object
+      required: [op, collection, record]
+      properties:
+        op: { const: put }
+        collection: { type: string }
+        record: { $ref: '#/components/schemas/Record' }
+
+    DeleteOp:
+      type: object
+      required: [op, collection, id]
+      properties:
+        op: { const: delete }
+        collection: { type: string }
+        id: { type: string }
+
+    DefineIndexOp:
+      type: object
+      required: [op, collection, index]
+      properties:
+        op: { const: defineIndex }
+        collection: { type: string }
+        index: { $ref: '#/components/schemas/IndexDefinition' }
+
+    Transaction:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Operation' }
+        requireSequenceAtLeast:
+          type: integer
+          format: int64
+          description: Optional optimistic concurrency guard (fail if store sequence is lower).
+
+    TransactionResult:
+      type: object
+      properties:
+        committedSequence: { type: integer, format: int64 }
+        results:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                properties:
+                  opIndex: { type: integer }
+                  status: { type: string, enum: [ok] }
+                  record:
+                    $ref: '#/components/schemas/Record'
+              - type: object
+                properties:
+                  opIndex: { type: integer }
+                  status: { type: string, enum: [error] }
+                  error:
+                    $ref: '#/components/schemas/Problem'
+
+    Snapshot:
+      type: object
+      properties:
+        id: { type: string }
+        sequence: { type: integer, format: int64 }
+
+    CompactionStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        pendingTables: { type: integer }
+        levels:
+          type: array
+          items:
+            type: object
+            properties:
+              level: { type: integer }
+              tables: { type: integer }
+              sizeBytes: { type: integer, format: int64 }
+        debtBytes: { type: integer, format: int64 }
+
+    BackupRef:
+      type: object
+      properties:
+        id: { type: string }
+        createdAt: { type: string, format: date-time }
+        note: { type: string, nullable: true }
+        sizeBytes: { type: integer, format: int64, nullable: true }
+
+    Metrics:
+      type: object
+      properties:
+        sequence: { type: integer, format: int64 }
+        opCounters:
+          type: object
+          properties:
+            puts: { type: integer, format: int64 }
+            deletes: { type: integer, format: int64 }
+            queries: { type: integer, format: int64 }
+        timingsMs:
+          type: object
+          properties:
+            lastFlush: { type: integer }
+            avgCompactionTick: { type: integer }
+        bloom:
+          type: object
+          properties:
+            fppEstimate: { type: number, format: float }
