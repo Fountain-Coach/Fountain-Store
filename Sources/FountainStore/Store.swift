@@ -106,6 +106,20 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
-        return []
+        // Collect latest visible version for each key and filter by prefix.
+        let encoder = JSONEncoder()
+        let seqLimit = snapshot?.sequence ?? UInt64.max
+        var items: [(Data, C)] = []
+
+        for (id, versions) in data {
+            guard let hit = versions.last(where: { $0.0 <= seqLimit }),
+                  let value = hit.1 else { continue }
+            let keyData = try encoder.encode(id)
+            if let p = prefix, !keyData.starts(with: p) { continue }
+            items.append((keyData, value))
+        }
+
+        items.sort { $0.0.lexicographicallyPrecedes($1.0) }
+        return items.prefix(limit).map { $0.1 }
     }
 }
