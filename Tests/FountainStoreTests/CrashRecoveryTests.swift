@@ -28,5 +28,19 @@ final class CrashRecoveryTests: XCTestCase {
         let v = try await coll2.get(id: 1)
         XCTAssertEqual(v?.val, "a")
     }
+
+    func testRecoveryFromFlushedSSTable() async throws {
+        let (store, dir) = try await makeTempStore()
+        var s: FountainStore? = store
+        let coll = await s!.collection("docs", of: Doc.self)
+        try await coll.put(Doc(id: 1, val: "a"))
+        try await triggerMemtableFlush(s!)
+        s = nil
+        let reopened = try await reopenStore(at: dir)
+        let coll2 = await reopened.collection("docs", of: Doc.self)
+        try await Task.sleep(nanoseconds: 1_000_000)
+        let v = try await coll2.get(id: 1)
+        XCTAssertEqual(v?.val, "a")
+    }
 }
 

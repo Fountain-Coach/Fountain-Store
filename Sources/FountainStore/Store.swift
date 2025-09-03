@@ -15,11 +15,12 @@ import FountainVector
 internal enum CrashError: Error { case triggered }
 internal enum CrashPoints {
     nonisolated(unsafe) static var active: String?
-    nonisolated(unsafe) static func hit(_ id: String) throws {
+    nonisolated static func hit(_ id: String) throws {
         if active == id { throw CrashError.triggered }
     }
 }
 
+/// Configuration parameters for opening a `FountainStore`.
 public struct StoreOptions: Sendable {
     public let path: URL
     public let cacheBytes: Int
@@ -33,11 +34,13 @@ public struct StoreOptions: Sendable {
     }
 }
 
+/// Immutable view of the store at a specific sequence number.
 public struct Snapshot: Sendable, Hashable {
     public let sequence: UInt64
     public init(sequence: UInt64) { self.sequence = sequence }
 }
 
+/// Aggregated counters for store operations.
 public struct Metrics: Sendable, Hashable, Codable {
     public var puts: UInt64 = 0
     public var gets: UInt64 = 0
@@ -54,6 +57,7 @@ private struct WALPayload: Codable {
     let value: Data?
 }
 
+/// Structured log events emitted by the store.
 public enum LogEvent: Sendable, Hashable, Codable {
     case put(collection: String)
     case get(collection: String)
@@ -130,14 +134,17 @@ public enum LogEvent: Sendable, Hashable, Codable {
     }
 }
 
+/// Errors thrown when operating on collections.
 public enum CollectionError: Error, Sendable {
     case uniqueConstraintViolation(index: String, key: String)
 }
 
+/// Errors related to transaction sequencing.
 public enum TransactionError: Error, Sendable {
     case sequenceTooLow(required: UInt64, current: UInt64)
 }
 
+/// Definition for a secondary index over documents of type `C`.
 public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
@@ -153,12 +160,14 @@ public struct Index<C>: Sendable {
     }
 }
 
+/// Marker type representing a transactional batch.
 public struct Transaction: Sendable {
-    // Marker type for now; expanded at M3.
     public init() {}
 }
 
+/// Top-level actor managing collections and persistence.
 public actor FountainStore {
+    /// Opens or creates a store at the given path.
     public static func open(_ opts: StoreOptions) async throws -> FountainStore {
         let fm = FileManager.default
         try fm.createDirectory(at: opts.path, withIntermediateDirectories: true)
@@ -171,7 +180,7 @@ public actor FountainStore {
         // Load manifest to seed sequence and discover existing tables.
         let m = try await manifest.load()
         await store.setSequence(m.sequence)
-        // TODO: Load existing SSTables into in-memory indexes.
+        try await store.loadSSTables(m)
 
         // Replay WAL records newer than the manifest sequence.
         let recs = try await wal.replay()
@@ -181,10 +190,12 @@ public actor FountainStore {
         return store
     }
 
+    /// Returns a snapshot representing the current sequence.
     public func snapshot() -> Snapshot {
-        return Snapshot(sequence: sequence)
+        Snapshot(sequence: sequence)
     }
 
+    /// Returns a handle to the named collection for document type `C`.
     public func collection<C: Codable & Identifiable>(_ name: String, of: C.Type) -> Collection<C> {
         let coll = Collection<C>(name: name, store: self)
         if let items = bootstrap.removeValue(forKey: name) {
@@ -213,10 +224,12 @@ public actor FountainStore {
         return start
     }
 
+    /// Returns current metrics without resetting them.
     public func metricsSnapshot() -> Metrics {
         metrics
     }
 
+    /// Resets metrics counters and returns their previous values.
     public func resetMetrics() -> Metrics {
         let snap = metrics
         metrics = Metrics()
@@ -268,6 +281,18 @@ public actor FountainStore {
         bootstrap[collection, default: []].append((id, value, sequence))
     }
 
+    internal func loadSSTables(_ manifest: Manifest) async throws {
+        for (id, url) in manifest.tables {
+            let handle = SSTableHandle(id: id, path: url)
+            let entries = try SSTable.scan(handle)
+            for (k, v) in entries {
+                if let (col, idData) = splitKey(k.raw) {
+                    addBootstrap(collection: col, id: idData, value: v.raw, sequence: manifest.sequence)
+                }
+            }
+        }
+    }
+
     internal func replayRecord(_ r: WALRecord) async throws {
         let payload = try JSONDecoder().decode(WALPayload.self, from: r.payload)
         await memtable.put(MemtableEntry(key: payload.key, value: payload.value, sequence: r.sequence))
@@ -314,6 +339,7 @@ public actor FountainStore {
     }
 }
 
+/// Provides CRUD and indexing operations for a document collection.
 public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashable {
     public let name: String
     private let store: FountainStore
@@ -515,6 +541,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
+    /// Inserts or updates a document in the collection.
     public func put(_ value: C, sequence: UInt64? = nil) async throws {
         await store.record(.put)
         await store.log(.put(collection: name))
@@ -555,6 +582,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         performPut(value, sequence: seq)
     }
 
+    /// Retrieves a document by identifier, optionally from a snapshot.
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
         await store.record(.get)
         await store.log(.get(collection: name))
@@ -571,6 +599,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return versions.filter { $0.0 <= limit }
     }
 
+    /// Removes a document by identifier.
     public func delete(id: C.ID, sequence: UInt64? = nil) async throws {
         await store.record(.delete)
         await store.log(.delete(collection: name))
@@ -619,6 +648,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
+    /// Performs a full-text search against the given index.
     public func searchText(_ name: String, query: String, limit: Int? = nil) async throws -> [C] {
         await store.record(.indexLookup)
         await store.log(.indexLookup(collection: self.name, index: name))
@@ -634,6 +664,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return res
     }
 
+    /// Performs a nearest-neighbor vector search using the specified index.
     public func vectorSearch(_ name: String, query: [Double], k: Int, metric: HNSWIndex.DistanceMetric = .l2) async throws -> [C] {
         await store.record(.indexLookup)
         await store.log(.indexLookup(collection: self.name, index: name))
@@ -649,6 +680,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return res
     }
 
+    /// Scans a secondary index by key prefix.
     public func scanIndex(_ name: String, prefix: String, limit: Int? = nil, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.indexLookup)
         await store.log(.indexLookup(collection: self.name, index: name))
@@ -691,6 +723,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         return items.prefix(maxItems).map { $0.1 }
     }
 
+    /// Scans documents by key prefix, respecting an optional snapshot.
     public func scan(prefix: Data? = nil, limit: Int? = nil, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.scan)
         await store.log(.scan(collection: name))
