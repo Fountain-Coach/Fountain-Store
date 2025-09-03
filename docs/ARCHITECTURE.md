@@ -6,7 +6,7 @@
 - **Isolation**: MVCC snapshots keyed by sequence numbers.
 - **Indexes**: Maintained atomically with base writes; unique and multi‑value with equality and prefix scans.
 - **Optional**: FTS (inverted index) and Vector (HNSW).
-- **Metrics**: Operation counters exposed via `metricsSnapshot()` for observability.
+- **Metrics**: Operation counters exposed via `metricsSnapshot()` and reset with `resetMetrics()` for observability.
 - **Logs**: Structured operation events delivered via `StoreOptions.logger`.
 - **Configuration**: Tunable defaults such as `StoreOptions.defaultScanLimit` for range and index scans.
 
