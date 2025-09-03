@@ -18,11 +18,13 @@ public struct SSTableHandle: Sendable, Hashable {
 
 public struct TableKey: Sendable, Hashable, Comparable {
     public let raw: Data
+    public init(raw: Data) { self.raw = raw }
     public static func < (lhs: TableKey, rhs: TableKey) -> Bool { lhs.raw.lexicographicallyPrecedes(rhs.raw) }
 }
 
 public struct TableValue: Sendable, Hashable {
     public let raw: Data
+    public init(raw: Data) { self.raw = raw }
 }
 
 public enum SSTableError: Error { case corrupt, notFound }
