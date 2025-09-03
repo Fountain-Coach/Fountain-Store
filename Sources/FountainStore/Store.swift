@@ -171,7 +171,7 @@ public actor FountainStore {
         // Load manifest to seed sequence and discover existing tables.
         let m = try await manifest.load()
         await store.setSequence(m.sequence)
-        // TODO: Load existing SSTables into in-memory indexes.
+        try await store.loadSSTables(m)
 
         // Replay WAL records newer than the manifest sequence.
         let recs = try await wal.replay()
@@ -266,6 +266,18 @@ public actor FountainStore {
 
     private func addBootstrap(collection: String, id: Data, value: Data?, sequence: UInt64) {
         bootstrap[collection, default: []].append((id, value, sequence))
+    }
+
+    internal func loadSSTables(_ manifest: Manifest) async throws {
+        for (id, url) in manifest.tables {
+            let handle = SSTableHandle(id: id, path: url)
+            let entries = try SSTable.scan(handle)
+            for (k, v) in entries {
+                if let (col, idData) = splitKey(k.raw) {
+                    addBootstrap(collection: col, id: idData, value: v.raw, sequence: manifest.sequence)
+                }
+            }
+        }
     }
 
     internal func replayRecord(_ r: WALRecord) async throws {
