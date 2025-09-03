@@ -11,6 +11,7 @@
 ## Transactions
 - Multi‑collection atomicity
 - Unique index enforcement
+- Index scans (prefix)
 - Snapshot repeatability
 
 ## Observability

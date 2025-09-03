@@ -148,4 +148,38 @@ final class StoreBasicsTests: XCTestCase {
         let snapA = try await docs.byIndex("byTag", equals: "a", snapshot: snap).map { $0.id }.sorted()
         XCTAssertEqual(snapA, [1, 2])
     }
+
+    func test_unique_index_scan_prefix_and_limit() async throws {
+        struct User: Codable, Identifiable, Equatable {
+            var id: Int
+            var email: String
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let users = await store.collection("users", of: User.self)
+        try await users.define(.init(name: "byEmail", kind: .unique(\User.email)))
+        try await users.put(.init(id: 1, email: "a@example.com"))
+        try await users.put(.init(id: 2, email: "aa@example.com"))
+        try await users.put(.init(id: 3, email: "b@example.com"))
+        let res = try await users.scanIndex("byEmail", prefix: "a").map { $0.id }
+        XCTAssertEqual(res, [1, 2])
+        let limited = try await users.scanIndex("byEmail", prefix: "a", limit: 1).map { $0.id }
+        XCTAssertEqual(limited, [1])
+    }
+
+    func test_multi_index_scan_prefix() async throws {
+        struct Doc: Codable, Identifiable, Equatable {
+            var id: Int
+            var tag: String
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let docs = await store.collection("docs", of: Doc.self)
+        try await docs.define(.init(name: "byTag", kind: .multi(\Doc.tag)))
+        try await docs.put(.init(id: 1, tag: "a1"))
+        try await docs.put(.init(id: 2, tag: "a2"))
+        try await docs.put(.init(id: 3, tag: "b1"))
+        let res = try await docs.scanIndex("byTag", prefix: "a").map { $0.id }.sorted()
+        XCTAssertEqual(res, [1, 2])
+    }
 }
