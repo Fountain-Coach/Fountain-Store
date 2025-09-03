@@ -33,6 +33,7 @@ public struct Metrics: Sendable, Hashable, Codable {
     public var scans: UInt64 = 0
     public var indexLookups: UInt64 = 0
     public var batches: UInt64 = 0
+    public var histories: UInt64 = 0
     public init() {}
 }
 
@@ -43,6 +44,7 @@ public enum LogEvent: Sendable, Hashable, Codable {
     case scan(collection: String)
     case indexLookup(collection: String, index: String)
     case batch(collection: String, count: Int)
+    case history(collection: String)
 
     private enum CodingKeys: String, CodingKey {
         case type, collection, index, count
@@ -71,6 +73,9 @@ public enum LogEvent: Sendable, Hashable, Codable {
             try container.encode("batch", forKey: .type)
             try container.encode(collection, forKey: .collection)
             try container.encode(count, forKey: .count)
+        case .history(let collection):
+            try container.encode("history", forKey: .type)
+            try container.encode(collection, forKey: .collection)
         }
     }
 
@@ -98,6 +103,9 @@ public enum LogEvent: Sendable, Hashable, Codable {
             let collection = try container.decode(String.self, forKey: .collection)
             let count = try container.decode(Int.self, forKey: .count)
             self = .batch(collection: collection, count: count)
+        case "history":
+            let collection = try container.decode(String.self, forKey: .collection)
+            self = .history(collection: collection)
         default:
             let context = DecodingError.Context(codingPath: [CodingKeys.type], debugDescription: "Unknown log event type: \(type)")
             throw DecodingError.dataCorrupted(context)
@@ -174,7 +182,7 @@ public actor FountainStore {
     }
 
     internal enum Metric {
-        case put, get, delete, scan, indexLookup, batch
+        case put, get, delete, scan, indexLookup, batch, history
     }
 
     internal func record(_ metric: Metric, _ count: UInt64 = 1) {
@@ -191,6 +199,8 @@ public actor FountainStore {
             metrics.indexLookups &+= count
         case .batch:
             metrics.batches &+= count
+        case .history:
+            metrics.histories &+= count
         }
     }
 
@@ -339,6 +349,8 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     }
 
     public func history(id: C.ID, snapshot: Snapshot? = nil) async throws -> [(UInt64, C?)] {
+        await store.record(.history)
+        await store.log(.history(collection: name))
         guard let versions = data[id] else { return [] }
         let limit = snapshot?.sequence ?? UInt64.max
         return versions.filter { $0.0 <= limit }

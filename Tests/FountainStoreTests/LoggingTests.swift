@@ -32,6 +32,7 @@ final class LoggingTests: XCTestCase {
         _ = try await items.byIndex("byBody", equals: "a")
         _ = try await items.scanIndex("byBody", prefix: "a")
         _ = try await items.scan()
+        _ = try await items.history(id: 1)
         try await items.delete(id: 1)
         try await items.batch([.put(.init(id: 2, body: "b")), .delete(2)])
         let events = sink.snapshot()
@@ -43,6 +44,7 @@ final class LoggingTests: XCTestCase {
             .indexLookup(collection: "items", index: "byBody"),
             .get(collection: "items"),
             .scan(collection: "items"),
+            .history(collection: "items"),
             .delete(collection: "items"),
             .batch(collection: "items", count: 2),
             .put(collection: "items"),
@@ -52,7 +54,7 @@ final class LoggingTests: XCTestCase {
     }
 
     func test_log_event_codable_roundtrip() throws {
-        let event: LogEvent = .indexLookup(collection: "c", index: "i")
+        let event: LogEvent = .history(collection: "c")
         let data = try JSONEncoder().encode(event)
         let decoded = try JSONDecoder().decode(LogEvent.self, from: data)
         XCTAssertEqual(decoded, event)

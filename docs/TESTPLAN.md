@@ -15,7 +15,7 @@
 - Snapshot repeatability
 
 ## Observability
-- Operation metrics counters
+- Operation metrics counters and history logging
 
 ## Performance (later)
 - Write amplification tracking

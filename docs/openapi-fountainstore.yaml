@@ -630,6 +630,7 @@ components:
             puts: { type: integer, format: int64 }
             deletes: { type: integer, format: int64 }
             queries: { type: integer, format: int64 }
+            histories: { type: integer, format: int64 }
         timingsMs:
           type: object
           properties:
