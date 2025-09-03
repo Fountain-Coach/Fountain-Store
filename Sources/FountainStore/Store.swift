@@ -467,12 +467,12 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
-    public func searchText(_ name: String, query: String) async throws -> [C] {
+    public func searchText(_ name: String, query: String, limit: Int? = nil) async throws -> [C] {
         await store.record(.indexLookup)
         await store.log(.indexLookup(collection: self.name, index: name))
         guard let storage = indexes[name] else { return [] }
         guard case .fts(let idx) = storage else { return [] }
-        let ids = idx.index.search(query)
+        let ids = idx.index.search(query, limit: limit)
         var res: [C] = []
         for doc in ids {
             if let real = idx.idMap[doc], let val = try await get(id: real) {
