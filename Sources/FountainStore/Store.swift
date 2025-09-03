@@ -11,6 +11,15 @@ import FountainStoreCore
 import FountainFTS
 import FountainVector
 
+// Crash injection helper used in tests.
+internal enum CrashError: Error { case triggered }
+internal enum CrashPoints {
+    nonisolated(unsafe) static var active: String?
+    nonisolated(unsafe) static func hit(_ id: String) throws {
+        if active == id { throw CrashError.triggered }
+    }
+}
+
 public struct StoreOptions: Sendable {
     public let path: URL
     public let cacheBytes: Int
@@ -164,9 +173,9 @@ public actor FountainStore {
         await store.setSequence(m.sequence)
         // TODO: Load existing SSTables into in-memory indexes.
 
-        // Replay WAL into memtable and bootstrap map.
+        // Replay WAL records newer than the manifest sequence.
         let recs = try await wal.replay()
-        for r in recs {
+        for r in recs where r.sequence > m.sequence {
             try await store.replayRecord(r)
         }
         return store
@@ -279,7 +288,11 @@ public actor FountainStore {
         m.sequence = sequence
         m.tables[handle.id] = handle.path
         try await manifest.save(m)
+        // CRASH_POINT(id: manifest_save)
+        try CrashPoints.hit("manifest_save")
         await memtable.fireFlushCallbacks(drained)
+        // CRASH_POINT(id: memtable_flush)
+        try CrashPoints.hit("memtable_flush")
         // Schedule background compaction.
         Task { await compactor.tick() }
     }
@@ -530,7 +543,11 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         let valData = try JSONEncoder().encode(value)
         let payload = WALPayload(key: keyData, value: valData)
         try await store.wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(payload), crc32: 0))
+        // CRASH_POINT(id: wal_append)
+        try CrashPoints.hit("wal_append")
         try await store.wal.sync()
+        // CRASH_POINT(id: wal_fsync)
+        try CrashPoints.hit("wal_fsync")
         await store.memtable.put(MemtableEntry(key: keyData, value: valData, sequence: seq))
         try await store.flushMemtableIfNeeded()
 
@@ -567,7 +584,11 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         let keyData = try encodeKey(id)
         let payload = WALPayload(key: keyData, value: nil)
         try await store.wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(payload), crc32: 0))
+        // CRASH_POINT(id: wal_append)
+        try CrashPoints.hit("wal_append")
         try await store.wal.sync()
+        // CRASH_POINT(id: wal_fsync)
+        try CrashPoints.hit("wal_fsync")
         await store.memtable.put(MemtableEntry(key: keyData, value: nil, sequence: seq))
         try await store.flushMemtableIfNeeded()
 
