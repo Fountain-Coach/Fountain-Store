@@ -16,7 +16,7 @@ FountainStore is distributed as a Swift Package. To add it to your project, incl
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/FountainAI/Fountain-Store.git", from: "0.1.0")
+    .package(url: "https://github.com/Fountain-Coach/Fountain-Store.git", from: "0.1.0")
 ]
 ```
 
