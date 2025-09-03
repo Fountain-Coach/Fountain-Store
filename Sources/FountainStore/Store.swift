@@ -103,6 +103,12 @@ public actor FountainStore {
         metrics
     }
 
+    public func resetMetrics() -> Metrics {
+        let snap = metrics
+        metrics = Metrics()
+        return snap
+    }
+
     internal func defaultScanLimit() -> Int {
         options.defaultScanLimit
     }
