@@ -46,7 +46,7 @@ public actor SSTable {
     ///   the block index for fast negative lookups.
     public static func create(at url: URL, entries: [(TableKey, TableValue)]) async throws -> SSTableHandle {
         // Ensure the output file exists and open a handle for writing.
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
         let fh = try FileHandle(forWritingTo: url)
         defer { try? fh.close() }
 
@@ -140,7 +140,10 @@ public actor SSTable {
             var bitCntLE = UInt64(bitCount).littleEndian
             bloomData.append(Data(bytes: &kLE, count: 8))
             bloomData.append(Data(bytes: &bitCntLE, count: 8))
-            for var b in bits { var le = b.littleEndian; bloomData.append(Data(bytes: &le, count: 8)) }
+            for b in bits {
+                var le = b.littleEndian
+                bloomData.append(Data(bytes: &le, count: 8))
+            }
             try fh.write(contentsOf: bloomData)
         }
         let bloomSize = UInt64(bloomData.count)
@@ -159,6 +162,36 @@ public actor SSTable {
         try fh.write(contentsOf: footer)
 
         return SSTableHandle(id: UUID(), path: url)
+    }
+
+    /// Read all key/value pairs from an SSTable.
+    /// This performs a sequential scan of the table contents and ignores
+    /// bloom filters and block indexes. The caller is responsible for ensuring
+    /// the table fits in memory for this operation.
+    public static func scan(_ handle: SSTableHandle) throws -> [(TableKey, TableValue)] {
+        let data = try Data(contentsOf: handle.path)
+        guard data.count >= 32 else { return [] }
+        let footerStart = data.count - 32
+        let indexOffset = Int(data[footerStart..<(footerStart + 8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian)
+        let blockData = data[..<indexOffset]
+        var offset = 0
+        var res: [(TableKey, TableValue)] = []
+        while offset < blockData.count {
+            if offset + 4 > blockData.count { break }
+            let klen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+            offset += 4
+            if offset + klen > blockData.count { break }
+            let key = Data(blockData[offset..<(offset + klen)])
+            offset += klen
+            if offset + 4 > blockData.count { break }
+            let vlen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+            offset += 4
+            if offset + vlen > blockData.count { break }
+            let value = Data(blockData[offset..<(offset + vlen)])
+            offset += vlen
+            res.append((TableKey(raw: key), TableValue(raw: value)))
+        }
+        return res
     }
     public static func get(_ handle: SSTableHandle, key: TableKey) async throws -> TableValue? {
         let fh = try FileHandle(forReadingFrom: handle.path)

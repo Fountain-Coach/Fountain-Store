@@ -18,5 +18,6 @@ let package = Package(
         .target(name: "FountainFTS", dependencies: ["FountainStoreCore"]),
         .target(name: "FountainVector", dependencies: ["FountainStoreCore"]),
         .testTarget(name: "FountainStoreTests", dependencies: ["FountainStore", "FountainFTS", "FountainVector"]),
+        .executableTarget(name: "FountainStoreBenchmarks", dependencies: ["FountainStore"]),
     ]
 )
