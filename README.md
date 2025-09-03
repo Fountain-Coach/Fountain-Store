@@ -1,7 +1,7 @@
 
 # FountainStore
 
-**Status:** Milestone M5 — optional modules in progress; baseline FTS with analyzers and vector search (cosine/L2) underway.
+**Status:** Milestone M5 — optional modules available; baseline FTS with analyzers and vector search (cosine/L2).
 
 FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI.
 It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,
