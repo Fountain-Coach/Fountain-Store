@@ -1,10 +1,8 @@
 
 # FountainStore Architecture
 
-- **Note:** Disk persistence is under active development; the current release keeps all data in memory until WAL integration, crash recovery, and the SSTable read path are complete.
-
 - **Engine**: Log‑structured merge (WAL → Memtable → SSTables). Compaction merges sorted tables.
-- **Durability**: WAL with CRC + `fsync` on commit; manifest tracking live tables.
+- **Durability**: WAL with CRC + `fsync` on commit; manifest tracking live tables; SSTables loaded on startup for crash recovery.
 - **Isolation**: MVCC snapshots keyed by sequence numbers.
 - **Indexes**: Maintained atomically with base writes; unique and multi‑value with equality and prefix scans.
 - **Optional**: FTS (inverted index with pluggable analyzers) and Vector (HNSW with cosine/L2 metrics), currently stubbed.

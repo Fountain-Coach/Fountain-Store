@@ -13,6 +13,12 @@ jobs:
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: '6.0'
+      - name: Install SwiftFormat and SwiftLint
+        run: brew install swiftformat swiftlint
+      - name: SwiftFormat
+        run: swiftformat --lint .
+      - name: SwiftLint
+        run: swiftlint
       - name: Run tests with coverage
         run: swift test --enable-code-coverage
       - name: Locate coverage data

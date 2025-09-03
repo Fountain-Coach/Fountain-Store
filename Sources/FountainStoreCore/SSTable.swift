@@ -46,7 +46,7 @@ public actor SSTable {
     ///   the block index for fast negative lookups.
     public static func create(at url: URL, entries: [(TableKey, TableValue)]) async throws -> SSTableHandle {
         // Ensure the output file exists and open a handle for writing.
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
         let fh = try FileHandle(forWritingTo: url)
         defer { try? fh.close() }
 
@@ -140,7 +140,10 @@ public actor SSTable {
             var bitCntLE = UInt64(bitCount).littleEndian
             bloomData.append(Data(bytes: &kLE, count: 8))
             bloomData.append(Data(bytes: &bitCntLE, count: 8))
-            for var b in bits { var le = b.littleEndian; bloomData.append(Data(bytes: &le, count: 8)) }
+            for b in bits {
+                var le = b.littleEndian
+                bloomData.append(Data(bytes: &le, count: 8))
+            }
             try fh.write(contentsOf: bloomData)
         }
         let bloomSize = UInt64(bloomData.count)
