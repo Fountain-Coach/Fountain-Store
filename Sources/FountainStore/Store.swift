@@ -127,7 +127,7 @@ public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
         case multi(PartialKeyPath<C>)
-        case fts(PartialKeyPath<C>)
+        case fts(PartialKeyPath<C>, analyzer: @Sendable (String) -> [String] = FTSIndex.defaultAnalyzer)
         case vector(PartialKeyPath<C>)
     }
     public let name: String
@@ -233,9 +233,12 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
         final class FTS {
             let keyPath: KeyPath<C, String>
-            var index = FTSIndex()
+            var index: FTSIndex
             var idMap: [String: C.ID] = [:]
-            init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
+            init(keyPath: KeyPath<C, String>, analyzer: @escaping @Sendable (String) -> [String]) {
+                self.keyPath = keyPath
+                self.index = FTSIndex(analyzer: analyzer)
+            }
         }
         final class Vector {
             let keyPath: KeyPath<C, [Double]>
@@ -282,9 +285,9 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.map[key, default: []].append((seq, arr))
             }
             indexes[index.name] = .multi(idx)
-        case .fts(let path):
+        case .fts(let path, analyzer: let analyzer):
             guard let kp = path as? KeyPath<C, String> else { return }
-            let idx = IndexStorage.FTS(keyPath: kp)
+            let idx = IndexStorage.FTS(keyPath: kp, analyzer: analyzer)
             for (id, versions) in data {
                 guard let (_, val) = versions.last, let v = val else { continue }
                 let docID = "\(id)"

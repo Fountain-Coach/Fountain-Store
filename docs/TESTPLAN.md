@@ -17,6 +17,10 @@
 ## Observability
 - Operation metrics counters and history logging
 
+## Optional Modules
+- FTS search with BM25 ranking and custom analyzers
+- Vector search via HNSW using L2 and cosine metrics
+
 ## Performance (later)
 - Write amplification tracking
 - Bloom false‑positive sampling
