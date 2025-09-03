@@ -159,7 +159,131 @@ public actor SSTable {
         return SSTableHandle(id: UUID(), path: url)
     }
     public static func get(_ handle: SSTableHandle, key: TableKey) async throws -> TableValue? {
-        // TODO: binary search via block index; bloom precheck.
+        let fh = try FileHandle(forReadingFrom: handle.path)
+        defer { try? fh.close() }
+
+        // MARK: Read footer
+        let fileSize = try fh.seekToEnd()
+        guard fileSize >= 32 else { throw SSTableError.corrupt }
+        try fh.seek(toOffset: fileSize - 32)
+        guard let footerData = try fh.read(upToCount: 32), footerData.count == 32 else {
+            throw SSTableError.corrupt
+        }
+        func readUInt64(_ data: Data, _ start: Int) -> UInt64 {
+            data.withUnsafeBytes { $0.load(fromByteOffset: start, as: UInt64.self) }.littleEndian
+        }
+        let indexOffset = readUInt64(footerData, 0)
+        let indexSize = readUInt64(footerData, 8)
+        let bloomOffset = readUInt64(footerData, 16)
+        let bloomSize = readUInt64(footerData, 24)
+
+        // MARK: - Bloom filter precheck (optional)
+        if bloomSize > 0 {
+            try fh.seek(toOffset: bloomOffset)
+            guard let bloomData = try fh.read(upToCount: Int(bloomSize)), bloomData.count == Int(bloomSize) else {
+                throw SSTableError.corrupt
+            }
+            var cursor = bloomData.startIndex
+            func readNextUInt64() -> UInt64? {
+                guard cursor + 8 <= bloomData.endIndex else { return nil }
+                defer { cursor += 8 }
+                return bloomData[cursor..<cursor+8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+            }
+            guard let kVal = readNextUInt64(), let _ = readNextUInt64() else {
+                throw SSTableError.corrupt
+            }
+            var bits: [UInt64] = []
+            while cursor < bloomData.endIndex {
+                guard let v = readNextUInt64() else { throw SSTableError.corrupt }
+                bits.append(v)
+            }
+            let k = Int(kVal)
+            // Local bloom filter check mirroring BloomFilter.mayContain
+            func hashIdx(_ data: Data, _ i: Int) -> Int {
+                var h: UInt64 = 1469598103934665603 &+ UInt64(i)
+                for b in data { h = (h ^ UInt64(b)) &* 1099511628211 }
+                return Int(h % UInt64(bits.count * 64))
+            }
+            func bitSet(_ bit: Int) -> Bool {
+                (bits[bit/64] & (1 << UInt64(bit%64))) != 0
+            }
+            var mayContain = true
+            for i in 0..<k { if !bitSet(hashIdx(key.raw, i)) { mayContain = false; break } }
+            if !mayContain { return nil }
+        }
+
+        // MARK: - Read block index
+        try fh.seek(toOffset: indexOffset)
+        guard let idxData = try fh.read(upToCount: Int(indexSize)), idxData.count == Int(indexSize) else {
+            throw SSTableError.corrupt
+        }
+        var i = 0
+        guard idxData.count >= 4 else { throw SSTableError.corrupt }
+        let blockCount = Int(idxData[i..<i+4].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+        i += 4
+        var blocks: [(Data, UInt64, UInt64)] = []
+        blocks.reserveCapacity(blockCount)
+        for _ in 0..<blockCount {
+            guard i + 4 <= idxData.count else { throw SSTableError.corrupt }
+            let klen = Int(idxData[i..<i+4].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            i += 4
+            guard i + klen <= idxData.count else { throw SSTableError.corrupt }
+            let firstKey = Data(idxData[i..<i+klen])
+            i += klen
+            guard i + 16 <= idxData.count else { throw SSTableError.corrupt }
+            let off = idxData[i..<i+8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+            i += 8
+            let len = idxData[i..<i+8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+            i += 8
+            blocks.append((firstKey, off, len))
+        }
+
+        // MARK: - Binary search block index
+        guard !blocks.isEmpty else { return nil }
+        var lo = 0
+        var hi = blocks.count - 1
+        var candidate = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let midKey = blocks[mid].0
+            if midKey.lexicographicallyPrecedes(key.raw) || midKey == key.raw {
+                candidate = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        if candidate < 0 { return nil }
+        let blockMeta = blocks[candidate]
+
+        // MARK: - Load target block
+        try fh.seek(toOffset: blockMeta.1)
+        guard let blockData = try fh.read(upToCount: Int(blockMeta.2)), blockData.count == Int(blockMeta.2) else {
+            throw SSTableError.corrupt
+        }
+
+        // MARK: - Search within block
+        var pos = 0
+        let target = key.raw
+        while pos < blockData.count {
+            guard pos + 4 <= blockData.count else { throw SSTableError.corrupt }
+            let klen = Int(blockData[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            pos += 4
+            guard pos + klen <= blockData.count else { throw SSTableError.corrupt }
+            let kData = blockData[pos..<pos+klen]
+            pos += klen
+            guard pos + 4 <= blockData.count else { throw SSTableError.corrupt }
+            let vlen = Int(blockData[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            pos += 4
+            guard pos + vlen <= blockData.count else { throw SSTableError.corrupt }
+            let vData = Data(blockData[pos..<pos+vlen])
+            pos += vlen
+            if kData.elementsEqual(target) {
+                return TableValue(raw: vData)
+            } else if target.lexicographicallyPrecedes(Data(kData)) {
+                break // keys are sorted; early exit
+            }
+        }
         return nil
     }
 }
