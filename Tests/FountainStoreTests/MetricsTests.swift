@@ -25,4 +25,19 @@ final class MetricsTests: XCTestCase {
         XCTAssertEqual(m.deletes, 1)
         XCTAssertEqual(m.batches, 0)
     }
+
+    func test_batch_operation_counters() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let items = await store.collection("items", of: Item.self)
+        try await items.batch([
+            .put(.init(id: 1, body: "a")),
+            .put(.init(id: 2, body: "b")),
+            .delete(1)
+        ])
+        let m = await store.metricsSnapshot()
+        XCTAssertEqual(m.batches, 1)
+        XCTAssertEqual(m.puts, 2)
+        XCTAssertEqual(m.deletes, 1)
+    }
 }
