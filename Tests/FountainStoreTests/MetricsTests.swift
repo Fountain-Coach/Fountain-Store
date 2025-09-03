@@ -57,4 +57,13 @@ final class MetricsTests: XCTestCase {
         XCTAssertEqual(m.indexLookups, 0)
         XCTAssertEqual(m.batches, 0)
     }
+
+    func test_metrics_codable_roundtrip() throws {
+        var m = Metrics()
+        m.puts = 2
+        m.gets = 3
+        let data = try JSONEncoder().encode(m)
+        let decoded = try JSONDecoder().decode(Metrics.self, from: data)
+        XCTAssertEqual(decoded, m)
+    }
 }
