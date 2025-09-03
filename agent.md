@@ -48,10 +48,10 @@
 - Atomic multi‑put/delete batches with a sequence boundary.
 - Unique and multi‑value secondary indexes; index scans.
 
-**M4 — Observability & Tuning (you are here)**
+**M4 — Observability & Tuning** ✅
 - Metrics counters; structured logs; configuration knobs.
 
-**M5 — Optional Modules**
+**M5 — Optional Modules (you are here)**
 - FTS (inverted index, analyzers, BM25).
 - Vector (HNSW; cosine/L2).
 
