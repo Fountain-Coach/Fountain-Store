@@ -32,6 +32,10 @@ public struct Metrics: Sendable, Hashable {
     public init() {}
 }
 
+public enum CollectionError: Error, Sendable {
+    case uniqueConstraintViolation(index: String, key: String)
+}
+
 public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
@@ -187,6 +191,17 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             seq = await store.nextSequence()
         }
         let old = data[value.id]?.last?.1
+        for (name, storage) in indexes {
+            switch storage {
+            case .unique(let idx):
+                let key = value[keyPath: idx.keyPath]
+                if let existing = idx.map[key]?.last?.1, existing != value.id {
+                    throw CollectionError.uniqueConstraintViolation(index: name, key: key)
+                }
+            case .multi:
+                continue
+            }
+        }
         data[value.id, default: []].append((seq, value))
         for storage in indexes.values {
             switch storage {
