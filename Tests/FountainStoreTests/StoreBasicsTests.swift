@@ -1,6 +1,7 @@
 
 import XCTest
 @testable import FountainStore
+import FountainStoreCore
 
 final class StoreBasicsTests: XCTestCase {
     struct Note: Codable, Identifiable, Equatable {
@@ -181,5 +182,99 @@ final class StoreBasicsTests: XCTestCase {
         try await docs.put(.init(id: 3, tag: "b1"))
         let res = try await docs.scanIndex("byTag", prefix: "a").map { $0.id }.sorted()
         XCTAssertEqual(res, [1, 2])
+    }
+
+    // MARK: - Persistence Across Restart
+
+    func test_records_and_indexes_persist_across_restart() async throws {
+        struct User: Codable, Identifiable, Equatable { var id: Int; var email: String }
+        struct Doc: Codable, Identifiable, Equatable { var id: Int; var tag: String }
+        struct Text: Codable, Identifiable, Equatable { var id: Int; var text: String }
+        struct Vec: Codable, Identifiable, Equatable { var id: String; var embedding: [Double] }
+
+        let (initial, dir) = try await makeTempStore()
+        var store: FountainStore? = initial
+        let users = await store!.collection("users", of: User.self)
+        try await users.define(.init(name: "byEmail", kind: .unique(\User.email)))
+        try await users.put(.init(id: 1, email: "a@example.com"))
+
+        let docs = await store!.collection("docs", of: Doc.self)
+        try await docs.define(.init(name: "byTag", kind: .multi(\Doc.tag)))
+        try await docs.put(.init(id: 1, tag: "t1"))
+
+        let texts = await store!.collection("texts", of: Text.self)
+        try await texts.define(.init(name: "fts", kind: .fts(\Text.text)))
+        try await texts.put(.init(id: 1, text: "hello world"))
+
+        let vecs = await store!.collection("vecs", of: Vec.self)
+        try await vecs.define(.init(name: "vec", kind: .vector(\Vec.embedding)))
+        try await vecs.put(.init(id: "a", embedding: [0.0, 0.0]))
+
+        store = nil
+        let reopened = try await reopenStore(at: dir)
+        let rUsers = await reopened.collection("users", of: User.self)
+        try await rUsers.define(.init(name: "byEmail", kind: .unique(\User.email)))
+        let rDocs = await reopened.collection("docs", of: Doc.self)
+        try await rDocs.define(.init(name: "byTag", kind: .multi(\Doc.tag)))
+        let rTexts = await reopened.collection("texts", of: Text.self)
+        try await rTexts.define(.init(name: "fts", kind: .fts(\Text.text)))
+        let rVecs = await reopened.collection("vecs", of: Vec.self)
+        try await rVecs.define(.init(name: "vec", kind: .vector(\Vec.embedding)))
+
+        try await Task.sleep(nanoseconds: 1_000_000)
+
+        let uVal = try await rUsers.get(id: 1)
+        let dVal = try await rDocs.get(id: 1)
+        let tVal = try await rTexts.get(id: 1)
+        let vVal = try await rVecs.get(id: "a")
+        XCTAssertNotNil(uVal)
+        XCTAssertNotNil(dVal)
+        XCTAssertNotNil(tVal)
+        XCTAssertNotNil(vVal)
+
+        let uRes = try await rUsers.byIndex("byEmail", equals: "a@example.com").map { $0.id }
+        XCTAssertEqual(uRes, [1])
+        let dRes = try await rDocs.byIndex("byTag", equals: "t1").map { $0.id }
+        XCTAssertEqual(dRes, [1])
+        let tRes = try await rTexts.searchText("fts", query: "hello").map { $0.id }
+        XCTAssertEqual(tRes, [1])
+        let vRes = try await rVecs.vectorSearch("vec", query: [0.1, 0.1], k: 1).map { $0.id }
+        XCTAssertEqual(vRes, ["a"])
+    }
+
+    // MARK: - Property Tests
+
+    func test_wal_corruption_detection_property() async throws {
+        for _ in 0..<10 {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let wal = WAL(path: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let payload = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+            try await wal.append(WALRecord(sequence: 1, payload: payload, crc32: 0))
+            try await wal.sync()
+            var data = try Data(contentsOf: url)
+            // Skip header (seq + len) and corrupt payload or CRC.
+            if data.count > 12 {
+                let idx = Int.random(in: 12..<data.count)
+                data[idx] ^= 0xFF
+            }
+            try data.write(to: url)
+            let recs = try await wal.replay()
+            XCTAssertTrue(recs.isEmpty)
+        }
+    }
+
+    func test_manifest_sequence_monotonicity_property() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let manifest = ManifestStore(url: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var last: UInt64 = 0
+        for _ in 0..<20 {
+            last &+= UInt64.random(in: 0...5)
+            try await manifest.save(Manifest(sequence: last))
+            let loaded = try await manifest.load()
+            XCTAssertGreaterThanOrEqual(loaded.sequence, last)
+            XCTAssertEqual(loaded.sequence, last)
+        }
     }
 }
