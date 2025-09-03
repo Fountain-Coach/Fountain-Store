@@ -36,6 +36,10 @@ public enum CollectionError: Error, Sendable {
     case uniqueConstraintViolation(index: String, key: String)
 }
 
+public enum TransactionError: Error, Sendable {
+    case sequenceTooLow(required: UInt64, current: UInt64)
+}
+
 public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
@@ -166,8 +170,14 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
-    public func batch(_ ops: [BatchOp]) async throws {
+    public func batch(_ ops: [BatchOp], requireSequenceAtLeast: UInt64? = nil) async throws {
         guard !ops.isEmpty else { return }
+        if let req = requireSequenceAtLeast {
+            let current = await store.snapshot().sequence
+            guard current >= req else {
+                throw TransactionError.sequenceTooLow(required: req, current: current)
+            }
+        }
         await store.record(.batch)
         let start = await store.allocateSequences(ops.count)
         var seq = start

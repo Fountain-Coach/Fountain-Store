@@ -48,5 +48,19 @@ final class TransactionTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    func test_batch_requires_sequence_guard() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let items = await store.collection("items", of: Item.self)
+        let snap = await store.snapshot()
+        do {
+            try await items.batch([.put(.init(id: 1, body: "a"))], requireSequenceAtLeast: snap.sequence + 1)
+            XCTFail("expected sequence guard failure")
+        } catch TransactionError.sequenceTooLow(let required, let current) {
+            XCTAssertEqual(required, snap.sequence + 1)
+            XCTAssertEqual(current, snap.sequence)
+        }
+    }
 }
 
