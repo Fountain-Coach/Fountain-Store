@@ -27,4 +27,12 @@ final class FTSTests: XCTestCase {
         let res = idx.search("swift")
         XCTAssertEqual(res, ["A", "B"])
     }
+
+    func test_stopword_analyzer() {
+        let stopwords: Set<String> = ["the", "and"]
+        var idx = FTSIndex(analyzer: FTSIndex.stopwordAnalyzer(stopwords))
+        idx.add(docID: "1", text: "the quick brown fox")
+        XCTAssertTrue(idx.search("the").isEmpty)
+        XCTAssertEqual(Set(idx.search("quick")), ["1"])
+    }
 }
