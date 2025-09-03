@@ -3,7 +3,7 @@
 //  Compactor.swift
 //  FountainStoreCore
 //
-//  Background compaction (stub).
+//  Background compactor merging overlapping SSTables.
 //
 
 import Foundation
@@ -31,9 +31,8 @@ public actor Compactor {
     /// 4. Updates the manifest and removes obsolete files.
     ///
     /// The operation is intentionally coarse grained; it merges any group of
-    /// overlapping tables into a single SSTable.  The implementation favors
-    /// simplicity over sophistication as the surrounding components are still
-    /// stubs.
+    /// overlapping tables into a single SSTable. This simple approach omits
+    /// leveled compaction and throttling.
     public func tick() async {
         if running { return } // prevent overlapping invocations
         running = true
