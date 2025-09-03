@@ -51,15 +51,9 @@
 **M4 — Observability & Tuning** ✅
 - Metrics counters; structured logs; configuration knobs.
 
-**M5 — Optional Modules (you are here)**
+**M5 — Optional Modules** ✅
 - FTS (inverted index, analyzers, BM25).
 - Vector (HNSW; cosine/L2).
-
-**In Progress**
-
-- [ ] WAL integration
-- [ ] Crash recovery
-- [ ] SSTable read path
 
 ---
 
@@ -79,7 +73,7 @@ docs/
   ROADMAP.md
 ```
 
-`FountainFTS` and `FountainVector` are currently stubs awaiting full implementations.
+`FountainFTS` and `FountainVector` provide optional full‑text and vector search modules.
 
 ---
 
@@ -106,5 +100,3 @@ docs/
 - Keep `docs/` updated when public API changes.
 - When adding crash points, annotate with `// CRASH_POINT(id: …)` and test for them.
 
-> Begin with **M1** in `Tests/FountainStoreTests/StoreBasicsTests.swift` (currently `.todo`),
-> then implement `Sources/FountainStoreCore` components one by one.
