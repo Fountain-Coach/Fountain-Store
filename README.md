@@ -10,6 +10,16 @@ See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
 Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
 
+## Installation
+
+FountainStore is distributed as a Swift Package. To add it to your project, include the following dependency in your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/FountainAI/Fountain-Store.git", from: "0.1.0")
+]
+```
+
 ---
 
 # Vision (For Everyone)
