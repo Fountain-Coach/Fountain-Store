@@ -17,6 +17,6 @@ let package = Package(
         .target(name: "FountainStoreCore"),
         .target(name: "FountainFTS", dependencies: ["FountainStoreCore"]),
         .target(name: "FountainVector", dependencies: ["FountainStoreCore"]),
-        .testTarget(name: "FountainStoreTests", dependencies: ["FountainStore", "FountainFTS"]),
+        .testTarget(name: "FountainStoreTests", dependencies: ["FountainStore", "FountainFTS", "FountainVector"]),
     ]
 )
