@@ -28,6 +28,14 @@ final class FTSTests: XCTestCase {
         XCTAssertEqual(res, ["A", "B"])
     }
 
+    func test_search_limit() {
+        var idx = FTSIndex()
+        idx.add(docID: "1", text: "hello world")
+        idx.add(docID: "2", text: "hello hello world")
+        let res = idx.search("hello", limit: 1)
+        XCTAssertEqual(res, ["2"])
+    }
+
     func test_stopword_analyzer() {
         let stopwords: Set<String> = ["the", "and"]
         var idx = FTSIndex(analyzer: FTSIndex.stopwordAnalyzer(stopwords))

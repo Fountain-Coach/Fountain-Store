@@ -42,7 +42,7 @@ public struct FTSIndex: Sendable, Hashable {
         }
     }
 
-    public func search(_ query: String) -> [String] {
+    public func search(_ query: String, limit: Int? = nil) -> [String] {
         let tokens = analyze(query)
         guard let first = tokens.first else { return [] }
         var result = postings[first].map { Set($0.keys) } ?? Set<String>()
@@ -57,6 +57,9 @@ public struct FTSIndex: Sendable, Hashable {
             scored.append((doc, bm25(tokens, doc)))
         }
         scored.sort { $0.1 > $1.1 }
+        if let limit = limit {
+            return scored.prefix(limit).map { $0.0 }
+        }
         return scored.map { $0.0 }
     }
 

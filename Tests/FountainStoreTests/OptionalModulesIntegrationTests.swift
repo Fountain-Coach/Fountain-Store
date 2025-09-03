@@ -24,6 +24,17 @@ final class OptionalModulesIntegrationTests: XCTestCase {
         XCTAssertEqual(res, [1])
     }
 
+    func test_fts_index_search_limit() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let docs = await store.collection("docs", of: TextDoc.self)
+        try await docs.define(.init(name: "fts", kind: .fts(\TextDoc.text)))
+        try await docs.put(.init(id: 1, text: "hello world"))
+        try await docs.put(.init(id: 2, text: "hello hello world"))
+        let res = try await docs.searchText("fts", query: "hello", limit: 1).map { $0.id }
+        XCTAssertEqual(res, [2])
+    }
+
     func test_fts_custom_analyzer() async throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let store = try await FountainStore.open(.init(path: tmp))
