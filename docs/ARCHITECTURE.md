@@ -8,5 +8,6 @@
 - **Optional**: FTS (inverted index) and Vector (HNSW).
 - **Metrics**: Operation counters exposed via `metricsSnapshot()` for observability.
 - **Logs**: Structured operation events delivered via `StoreOptions.logger`.
+- **Configuration**: Tunable defaults such as `StoreOptions.defaultScanLimit` for range and index scans.
 
 See `agent.md` for implementation steps.

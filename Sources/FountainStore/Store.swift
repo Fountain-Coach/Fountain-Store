@@ -12,10 +12,12 @@ public struct StoreOptions: Sendable {
     public let path: URL
     public let cacheBytes: Int
     public let logger: (@Sendable (LogEvent) -> Void)?
-    public init(path: URL, cacheBytes: Int = 64 << 20, logger: (@Sendable (LogEvent) -> Void)? = nil) {
+    public let defaultScanLimit: Int
+    public init(path: URL, cacheBytes: Int = 64 << 20, logger: (@Sendable (LogEvent) -> Void)? = nil, defaultScanLimit: Int = 100) {
         self.path = path
         self.cacheBytes = cacheBytes
         self.logger = logger
+        self.defaultScanLimit = defaultScanLimit
     }
 }
 
@@ -99,6 +101,10 @@ public actor FountainStore {
 
     public func metricsSnapshot() -> Metrics {
         metrics
+    }
+
+    internal func defaultScanLimit() -> Int {
+        options.defaultScanLimit
     }
 
     internal enum Metric {
@@ -320,11 +326,17 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
-    public func scanIndex(_ name: String, prefix: String, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
+    public func scanIndex(_ name: String, prefix: String, limit: Int? = nil, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.indexLookup)
         await store.log(.indexLookup(collection: self.name, index: name))
         guard let storage = indexes[name] else { return [] }
         let seqLimit = snapshot?.sequence ?? UInt64.max
+        let maxItems: Int
+        if let limit = limit {
+            maxItems = limit
+        } else {
+            maxItems = await store.defaultScanLimit()
+        }
         var items: [(String, C)] = []
         switch storage {
         case .unique(let idx):
@@ -351,15 +363,21 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             }
         }
         items.sort { $0.0 < $1.0 }
-        return items.prefix(limit).map { $0.1 }
+        return items.prefix(maxItems).map { $0.1 }
     }
 
-    public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
+    public func scan(prefix: Data? = nil, limit: Int? = nil, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.scan)
         await store.log(.scan(collection: name))
         // Collect latest visible version for each key and filter by prefix.
         let encoder = JSONEncoder()
         let seqLimit = snapshot?.sequence ?? UInt64.max
+        let maxItems: Int
+        if let limit = limit {
+            maxItems = limit
+        } else {
+            maxItems = await store.defaultScanLimit()
+        }
         var items: [(Data, C)] = []
 
         for (id, versions) in data {
@@ -371,6 +389,6 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
 
         items.sort { $0.0.lexicographicallyPrecedes($1.0) }
-        return items.prefix(limit).map { $0.1 }
+        return items.prefix(maxItems).map { $0.1 }
     }
 }
