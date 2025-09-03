@@ -7,6 +7,8 @@
 //
 
 import Foundation
+import FountainFTS
+import FountainVector
 
 public struct StoreOptions: Sendable {
     public let path: URL
@@ -125,6 +127,8 @@ public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
         case multi(PartialKeyPath<C>)
+        case fts(PartialKeyPath<C>)
+        case vector(PartialKeyPath<C>)
     }
     public let name: String
     public let kind: Kind
@@ -227,8 +231,22 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             var map: [String: [(UInt64, [C.ID])]] = [:]
             init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
         }
+        final class FTS {
+            let keyPath: KeyPath<C, String>
+            var index = FTSIndex()
+            var idMap: [String: C.ID] = [:]
+            init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
+        }
+        final class Vector {
+            let keyPath: KeyPath<C, [Double]>
+            var index = HNSWIndex()
+            var idMap: [String: C.ID] = [:]
+            init(keyPath: KeyPath<C, [Double]>) { self.keyPath = keyPath }
+        }
         case unique(Unique)
         case multi(Multi)
+        case fts(FTS)
+        case vector(Vector)
     }
     private var indexes: [String: IndexStorage] = [:]
 
@@ -264,6 +282,26 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.map[key, default: []].append((seq, arr))
             }
             indexes[index.name] = .multi(idx)
+        case .fts(let path):
+            guard let kp = path as? KeyPath<C, String> else { return }
+            let idx = IndexStorage.FTS(keyPath: kp)
+            for (id, versions) in data {
+                guard let (_, val) = versions.last, let v = val else { continue }
+                let docID = "\(id)"
+                idx.index.add(docID: docID, text: v[keyPath: kp])
+                idx.idMap[docID] = id
+            }
+            indexes[index.name] = .fts(idx)
+        case .vector(let path):
+            guard let kp = path as? KeyPath<C, [Double]> else { return }
+            let idx = IndexStorage.Vector(keyPath: kp)
+            for (id, versions) in data {
+                guard let (_, val) = versions.last, let v = val else { continue }
+                let docID = "\(id)"
+                idx.index.add(id: docID, vector: v[keyPath: kp])
+                idx.idMap[docID] = id
+            }
+            indexes[index.name] = .vector(idx)
         }
     }
 
@@ -309,6 +347,8 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 }
             case .multi:
                 continue
+            case .fts, .vector:
+                continue
             }
         }
         data[value.id, default: []].append((seq, value))
@@ -336,6 +376,16 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 var arr = idx.map[key]?.last?.1 ?? []
                 if !arr.contains(value.id) { arr.append(value.id) }
                 idx.map[key, default: []].append((seq, arr))
+            case .fts(let idx):
+                let docID = "\(value.id)"
+                if old != nil { idx.index.remove(docID: docID) }
+                idx.index.add(docID: docID, text: value[keyPath: idx.keyPath])
+                idx.idMap[docID] = value.id
+            case .vector(let idx):
+                let docID = "\(value.id)"
+                if old != nil { idx.index.remove(id: docID) }
+                idx.index.add(id: docID, vector: value[keyPath: idx.keyPath])
+                idx.idMap[docID] = value.id
             }
         }
     }
@@ -378,6 +428,14 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 var arr = idx.map[key]?.last?.1 ?? []
                 if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
                 idx.map[key, default: []].append((seq, arr))
+            case .fts(let idx):
+                let docID = "\(id)"
+                idx.index.remove(docID: docID)
+                idx.idMap.removeValue(forKey: docID)
+            case .vector(let idx):
+                let docID = "\(id)"
+                idx.index.remove(id: docID)
+                idx.idMap.removeValue(forKey: docID)
             }
         }
     }
@@ -401,7 +459,39 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 if let val = try await get(id: id, snapshot: snapshot) { res.append(val) }
             }
             return res
+        case .fts, .vector:
+            return []
         }
+    }
+
+    public func searchText(_ name: String, query: String) async throws -> [C] {
+        await store.record(.indexLookup)
+        await store.log(.indexLookup(collection: self.name, index: name))
+        guard let storage = indexes[name] else { return [] }
+        guard case .fts(let idx) = storage else { return [] }
+        let ids = idx.index.search(query)
+        var res: [C] = []
+        for doc in ids {
+            if let real = idx.idMap[doc], let val = try await get(id: real) {
+                res.append(val)
+            }
+        }
+        return res
+    }
+
+    public func vectorSearch(_ name: String, query: [Double], k: Int, metric: HNSWIndex.DistanceMetric = .l2) async throws -> [C] {
+        await store.record(.indexLookup)
+        await store.log(.indexLookup(collection: self.name, index: name))
+        guard let storage = indexes[name] else { return [] }
+        guard case .vector(let idx) = storage else { return [] }
+        let ids = idx.index.search(query, k: k, metric: metric)
+        var res: [C] = []
+        for doc in ids {
+            if let real = idx.idMap[doc], let val = try await get(id: real) {
+                res.append(val)
+            }
+        }
+        return res
     }
 
     public func scanIndex(_ name: String, prefix: String, limit: Int? = nil, snapshot: Snapshot? = nil) async throws -> [C] {
@@ -439,6 +529,8 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 pairs.sort { $0.0.lexicographicallyPrecedes($1.0) }
                 for (_, val) in pairs { items.append((key, val)) }
             }
+        case .fts, .vector:
+            break
         }
         items.sort { $0.0 < $1.0 }
         return items.prefix(maxItems).map { $0.1 }

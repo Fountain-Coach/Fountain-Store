@@ -13,7 +13,7 @@ let package = Package(
         .library(name: "FountainVector", targets: ["FountainVector"]),
     ],
     targets: [
-        .target(name: "FountainStore", dependencies: ["FountainStoreCore"]),
+        .target(name: "FountainStore", dependencies: ["FountainStoreCore", "FountainFTS", "FountainVector"]),
         .target(name: "FountainStoreCore"),
         .target(name: "FountainFTS", dependencies: ["FountainStoreCore"]),
         .target(name: "FountainVector", dependencies: ["FountainStoreCore"]),
