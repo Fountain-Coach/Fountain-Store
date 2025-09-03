@@ -4,7 +4,8 @@
 //  FountainFTS
 //
 //  Basic inverted index for optional full‑text search module.
-//  Tokenization is whitespace and punctuation based with BM25 ranking.
+//  Tokenization is pluggable with a default whitespace/punctuation analyzer
+//  and BM25 ranking.
 
 import Foundation
 
@@ -12,11 +13,14 @@ public struct FTSIndex: Sendable, Hashable {
     private var postings: [String: [String: Int]] = [:] // token -> docID -> frequency
     private var docTokens: [String: [String: Int]] = [:] // docID -> token -> frequency
     private var docLengths: [String: Int] = [:] // docID -> token count
+    private let analyze: @Sendable (String) -> [String]
 
-    public init() {}
+    public init(analyzer: @escaping @Sendable (String) -> [String] = FTSIndex.defaultAnalyzer) {
+        self.analyze = analyzer
+    }
 
     public mutating func add(docID: String, text: String) {
-        let tokens = tokenize(text)
+        let tokens = analyze(text)
         var freqs: [String: Int] = [:]
         freqs.reserveCapacity(tokens.count)
         for t in tokens { freqs[t, default: 0] += 1 }
@@ -39,7 +43,7 @@ public struct FTSIndex: Sendable, Hashable {
     }
 
     public func search(_ query: String) -> [String] {
-        let tokens = tokenize(query)
+        let tokens = analyze(query)
         guard let first = tokens.first else { return [] }
         var result = postings[first].map { Set($0.keys) } ?? Set<String>()
         for t in tokens.dropFirst() {
@@ -56,10 +60,16 @@ public struct FTSIndex: Sendable, Hashable {
         return scored.map { $0.0 }
     }
 
-    private func tokenize(_ text: String) -> [String] {
+    public static func defaultAnalyzer(_ text: String) -> [String] {
         let separators = CharacterSet.alphanumerics.inverted
         let parts = text.lowercased().components(separatedBy: separators)
         return parts.filter { !$0.isEmpty }
+    }
+
+    public static func stopwordAnalyzer(_ stopwords: Set<String>) -> @Sendable (String) -> [String] {
+        { text in
+            defaultAnalyzer(text).filter { !stopwords.contains($0) }
+        }
     }
 
     private func bm25(_ queryTokens: [String], _ docID: String) -> Double {
