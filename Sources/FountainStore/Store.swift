@@ -8,12 +8,14 @@
 
 import Foundation
 
-public struct StoreOptions: Sendable, Hashable {
+public struct StoreOptions: Sendable {
     public let path: URL
     public let cacheBytes: Int
-    public init(path: URL, cacheBytes: Int = 64 << 20) {
+    public let logger: (@Sendable (LogEvent) -> Void)?
+    public init(path: URL, cacheBytes: Int = 64 << 20, logger: (@Sendable (LogEvent) -> Void)? = nil) {
         self.path = path
         self.cacheBytes = cacheBytes
+        self.logger = logger
     }
 }
 
@@ -30,6 +32,15 @@ public struct Metrics: Sendable, Hashable {
     public var indexLookups: UInt64 = 0
     public var batches: UInt64 = 0
     public init() {}
+}
+
+public enum LogEvent: Sendable, Hashable {
+    case put(collection: String)
+    case get(collection: String)
+    case delete(collection: String)
+    case scan(collection: String)
+    case indexLookup(collection: String, index: String)
+    case batch(collection: String, count: Int)
 }
 
 public enum CollectionError: Error, Sendable {
@@ -111,6 +122,10 @@ public actor FountainStore {
         }
     }
 
+    internal func log(_ event: LogEvent) {
+        options.logger?(event)
+    }
+
     private init(options: StoreOptions) { self.options = options }
 }
 
@@ -179,6 +194,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             }
         }
         await store.record(.batch)
+        await store.log(.batch(collection: name, count: ops.count))
         let start = await store.allocateSequences(ops.count)
         var seq = start
         for op in ops {
@@ -194,6 +210,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func put(_ value: C, sequence: UInt64? = nil) async throws {
         await store.record(.put)
+        await store.log(.put(collection: name))
         let seq: UInt64
         if let s = sequence {
             seq = s
@@ -243,6 +260,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
         await store.record(.get)
+        await store.log(.get(collection: name))
         guard let versions = data[id] else { return nil }
         let limit = snapshot?.sequence ?? UInt64.max
         return versions.last(where: { $0.0 <= limit })?.1
@@ -256,6 +274,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func delete(id: C.ID, sequence: UInt64? = nil) async throws {
         await store.record(.delete)
+        await store.log(.delete(collection: name))
         let seq: UInt64
         if let s = sequence {
             seq = s
@@ -281,6 +300,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.indexLookup)
+        await store.log(.indexLookup(collection: self.name, index: name))
         guard let storage = indexes[name] else { return [] }
         let limit = snapshot?.sequence ?? UInt64.max
         switch storage {
@@ -302,6 +322,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.scan)
+        await store.log(.scan(collection: name))
         // Collect latest visible version for each key and filter by prefix.
         let encoder = JSONEncoder()
         let seqLimit = snapshot?.sequence ?? UInt64.max
