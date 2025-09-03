@@ -19,6 +19,8 @@ jobs:
         run: swiftformat --lint .
       - name: SwiftLint
         run: swiftlint
+      - name: Build
+        run: swift build -c release
       - name: Run tests with coverage
         run: swift test --enable-code-coverage
       - name: Locate coverage data

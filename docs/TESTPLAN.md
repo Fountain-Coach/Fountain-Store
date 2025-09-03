@@ -25,7 +25,9 @@
 - FTS and vector index persistence across restart
 
 ## Infrastructure
-- Code coverage reporting via `swift test --enable-code-coverage` in CI
+- Linting via SwiftFormat and SwiftLint in CI
+- Build step (`swift build -c release`) and tests with coverage (`swift test --enable-code-coverage`) run in CI
+- Release workflow builds the package and uploads compiled artifacts for tagged versions
 
 ## Performance (later)
 - Write amplification tracking

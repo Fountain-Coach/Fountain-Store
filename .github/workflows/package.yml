@@ -1,0 +1,26 @@
+name: Package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.0'
+      - name: Build release
+        run: swift build -c release
+      - name: Archive artifacts
+        run: |
+          BIN=$(swift build --show-bin-path -c release)
+          tar -czf FountainStore-${{ github.ref_name }}.tar.gz -C "$BIN" .
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FountainStore-${{ github.ref_name }}
+          path: FountainStore-${{ github.ref_name }}.tar.gz
