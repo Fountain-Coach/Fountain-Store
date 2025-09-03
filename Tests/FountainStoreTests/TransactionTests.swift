@@ -27,5 +27,26 @@ final class TransactionTests: XCTestCase {
         let end = await store.snapshot()
         XCTAssertEqual(end.sequence, snap.sequence + 3)
     }
+
+    func test_unique_index_enforcement() async throws {
+        struct User: Codable, Identifiable, Equatable {
+            var id: Int
+            var email: String
+        }
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let store = try await FountainStore.open(.init(path: tmp))
+        let users = await store.collection("users", of: User.self)
+        try await users.define(.init(name: "byEmail", kind: .unique(\User.email)))
+        try await users.put(.init(id: 1, email: "a@example.com"))
+        do {
+            try await users.put(.init(id: 2, email: "a@example.com"))
+            XCTFail("expected unique violation")
+        } catch CollectionError.uniqueConstraintViolation(let index, let key) {
+            XCTAssertEqual(index, "byEmail")
+            XCTAssertEqual(key, "a@example.com")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
 }
 
