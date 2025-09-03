@@ -11,5 +11,6 @@
 - **Metrics**: Operation counters (puts, gets, deletes, scans, index lookups, batches, histories) exposed via `metricsSnapshot()` and reset with `resetMetrics()` for observability.
 - **Logs**: Structured operation events delivered via `StoreOptions.logger`.
 - **Configuration**: Tunable defaults such as `StoreOptions.defaultScanLimit` for range and index scans.
+- **Benchmarks**: `FountainStoreBenchmarks` executable measures baseline put/get throughput and emits JSON metrics.
 
 See `agent.md` for implementation steps.

@@ -8,6 +8,8 @@ secondary indexes, and optional FTS and Vector modules that currently ship as st
 
 See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
+Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
+
 ---
 
 # Vision (For Everyone)

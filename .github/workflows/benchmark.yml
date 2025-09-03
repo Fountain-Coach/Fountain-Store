@@ -1,0 +1,22 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.0'
+      - name: Run benchmarks
+        run: swift run -c release FountainStoreBenchmarks > benchmark.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: benchmark.json

@@ -29,6 +29,8 @@
 - Build step (`swift build -c release`) and tests with coverage (`swift test --enable-code-coverage`) run in CI
 - Release workflow builds the package and uploads compiled artifacts for tagged versions
 
-## Performance (later)
+## Performance
+- Put/Get throughput benchmarks via `FountainStoreBenchmarks`
+- Benchmark workflow uploads JSON metrics from CI runs
 - Write amplification tracking
 - Bloom false‑positive sampling
