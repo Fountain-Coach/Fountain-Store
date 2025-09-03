@@ -3,7 +3,7 @@
 //  Memtable.swift
 //  FountainStoreCore
 //
-//  In‑memory sorted map (placeholder implementation).
+//  In-memory sorted map backing the write buffer before flush to SSTables.
 //
 
 import Foundation
@@ -30,12 +30,12 @@ public actor Memtable {
 
     public func put(_ e: MemtableEntry) async {
         entries.append(e)
-        // Keep it sorted by key for now; optimize later.
+        // Maintain entries sorted by key using a full array sort.
         entries.sort { $0.key.lexicographicallyPrecedes($1.key) }
     }
 
     public func get(_ key: Data) async -> MemtableEntry? {
-        // Linear for now; replace with binary search later.
+        // Linear scan over the sorted array; efficient enough for small tables.
         return entries.last(where: { $0.key == key })
     }
 
