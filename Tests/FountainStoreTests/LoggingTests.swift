@@ -50,4 +50,11 @@ final class LoggingTests: XCTestCase {
         ]
         XCTAssertEqual(events, expected)
     }
+
+    func test_log_event_codable_roundtrip() throws {
+        let event: LogEvent = .indexLookup(collection: "c", index: "i")
+        let data = try JSONEncoder().encode(event)
+        let decoded = try JSONDecoder().decode(LogEvent.self, from: data)
+        XCTAssertEqual(decoded, event)
+    }
 }

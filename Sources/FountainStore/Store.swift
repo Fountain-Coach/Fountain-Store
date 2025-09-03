@@ -26,7 +26,7 @@ public struct Snapshot: Sendable, Hashable {
     public init(sequence: UInt64) { self.sequence = sequence }
 }
 
-public struct Metrics: Sendable, Hashable {
+public struct Metrics: Sendable, Hashable, Codable {
     public var puts: UInt64 = 0
     public var gets: UInt64 = 0
     public var deletes: UInt64 = 0
@@ -36,13 +36,73 @@ public struct Metrics: Sendable, Hashable {
     public init() {}
 }
 
-public enum LogEvent: Sendable, Hashable {
+public enum LogEvent: Sendable, Hashable, Codable {
     case put(collection: String)
     case get(collection: String)
     case delete(collection: String)
     case scan(collection: String)
     case indexLookup(collection: String, index: String)
     case batch(collection: String, count: Int)
+
+    private enum CodingKeys: String, CodingKey {
+        case type, collection, index, count
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .put(let collection):
+            try container.encode("put", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+        case .get(let collection):
+            try container.encode("get", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+        case .delete(let collection):
+            try container.encode("delete", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+        case .scan(let collection):
+            try container.encode("scan", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+        case .indexLookup(let collection, let index):
+            try container.encode("indexLookup", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+            try container.encode(index, forKey: .index)
+        case .batch(let collection, let count):
+            try container.encode("batch", forKey: .type)
+            try container.encode(collection, forKey: .collection)
+            try container.encode(count, forKey: .count)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        switch type {
+        case "put":
+            let collection = try container.decode(String.self, forKey: .collection)
+            self = .put(collection: collection)
+        case "get":
+            let collection = try container.decode(String.self, forKey: .collection)
+            self = .get(collection: collection)
+        case "delete":
+            let collection = try container.decode(String.self, forKey: .collection)
+            self = .delete(collection: collection)
+        case "scan":
+            let collection = try container.decode(String.self, forKey: .collection)
+            self = .scan(collection: collection)
+        case "indexLookup":
+            let collection = try container.decode(String.self, forKey: .collection)
+            let index = try container.decode(String.self, forKey: .index)
+            self = .indexLookup(collection: collection, index: index)
+        case "batch":
+            let collection = try container.decode(String.self, forKey: .collection)
+            let count = try container.decode(Int.self, forKey: .count)
+            self = .batch(collection: collection, count: count)
+        default:
+            let context = DecodingError.Context(codingPath: [CodingKeys.type], debugDescription: "Unknown log event type: \(type)")
+            throw DecodingError.dataCorrupted(context)
+        }
+    }
 }
 
 public enum CollectionError: Error, Sendable {
