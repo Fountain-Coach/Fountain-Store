@@ -1,12 +1,24 @@
 
 # FountainStore
 
-**Status:** Milestone M5 — optional modules present as stubs; disk persistence (WAL, crash recovery, SSTable read path) is in progress. Current builds keep data in memory only.
+**Status:** Initial release v0.1.0 – includes optional FTS and vector modules with disk persistence, crash recovery, and SSTable read path.
 
-FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI. Disk integration is not yet complete, so data does not survive process restarts. It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,
-secondary indexes, and optional FTS and Vector modules that currently ship as stubs, all with zero non‑Swift dependencies.
+FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI. The engine persists data to disk via a WAL and SSTables and reloads state on startup. It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,
+secondary indexes, and optional FTS and Vector modules, all with zero non‑Swift dependencies.
 
 See `agent.md` for Codex instructions and `docs/` for the full blueprint.
+
+Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
+
+## Installation
+
+FountainStore is distributed as a Swift Package. To add it to your project, include the following dependency in your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/FountainAI/Fountain-Store.git", from: "0.1.0")
+]
+```
 
 ---
 

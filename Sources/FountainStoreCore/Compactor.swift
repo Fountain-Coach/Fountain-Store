@@ -123,28 +123,6 @@ public actor Compactor {
     }
 
     private func readEntries(_ handle: SSTableHandle) throws -> [(TableKey, TableValue)] {
-        let data = try Data(contentsOf: handle.path)
-        guard data.count >= 32 else { return [] }
-        let footerStart = data.count - 32
-        let indexOffset = Int(data[footerStart..<(footerStart + 8)].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian)
-        let blockData = data[..<indexOffset]
-        var offset = 0
-        var res: [(TableKey, TableValue)] = []
-        while offset < blockData.count {
-            if offset + 4 > blockData.count { break }
-            let klen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
-            offset += 4
-            if offset + klen > blockData.count { break }
-            let key = Data(blockData[offset..<(offset + klen)])
-            offset += klen
-            if offset + 4 > blockData.count { break }
-            let vlen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
-            offset += 4
-            if offset + vlen > blockData.count { break }
-            let value = Data(blockData[offset..<(offset + vlen)])
-            offset += vlen
-            res.append((TableKey(raw: key), TableValue(raw: value)))
-        }
-        return res
+        try SSTable.scan(handle)
     }
 }
