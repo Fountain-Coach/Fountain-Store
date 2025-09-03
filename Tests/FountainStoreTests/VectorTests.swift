@@ -19,4 +19,12 @@ final class VectorTests: XCTestCase {
         let res = idx.search([0.0, 0.0], k: 1)
         XCTAssertEqual(res, ["b"])
     }
+
+    func test_cosine_distance() {
+        var idx = HNSWIndex()
+        idx.add(id: "a", vector: [1.0, 0.0])
+        idx.add(id: "b", vector: [0.0, 1.0])
+        let res = idx.search([1.0, 0.0], k: 2, metric: .cosine)
+        XCTAssertEqual(res, ["a", "b"])
+    }
 }
