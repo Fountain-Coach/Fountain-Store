@@ -44,11 +44,11 @@
 - Flush memtable to SSTable; background compaction; MVCC snapshots (sequence IDs).
 - Range scans and prefix scans.
 
-**M3 — Transactions & Indexes (you are here)**
+**M3 — Transactions & Indexes** ✅
 - Atomic multi‑put/delete batches with a sequence boundary.
 - Unique and multi‑value secondary indexes; index scans.
 
-**M4 — Observability & Tuning**
+**M4 — Observability & Tuning (you are here)**
 - Metrics counters; structured logs; configuration knobs.
 
 **M5 — Optional Modules**
