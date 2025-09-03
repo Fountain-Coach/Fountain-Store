@@ -19,4 +19,12 @@ final class FTSTests: XCTestCase {
         XCTAssertEqual(Set(idx.search("hello")), ["2"])
         XCTAssertTrue(idx.search("world").isEmpty)
     }
+
+    func test_bm25_ranking() {
+        var idx = FTSIndex()
+        idx.add(docID: "A", text: "swift codex swift")
+        idx.add(docID: "B", text: "swift codex")
+        let res = idx.search("swift")
+        XCTAssertEqual(res, ["A", "B"])
+    }
 }
