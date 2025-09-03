@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import FountainStoreCore
 import FountainFTS
 import FountainVector
 
@@ -37,6 +38,11 @@ public struct Metrics: Sendable, Hashable, Codable {
     public var batches: UInt64 = 0
     public var histories: UInt64 = 0
     public init() {}
+}
+
+private struct WALPayload: Codable {
+    let key: Data
+    let value: Data?
 }
 
 public enum LogEvent: Sendable, Hashable, Codable {
@@ -145,7 +151,25 @@ public struct Transaction: Sendable {
 
 public actor FountainStore {
     public static func open(_ opts: StoreOptions) async throws -> FountainStore {
-        return FountainStore(options: opts)
+        let fm = FileManager.default
+        try fm.createDirectory(at: opts.path, withIntermediateDirectories: true)
+        let wal = WAL(path: opts.path.appendingPathComponent("wal.log"))
+        let manifest = ManifestStore(url: opts.path.appendingPathComponent("MANIFEST.json"))
+        let memtable = Memtable(limit: 1024)
+        let compactor = Compactor(directory: opts.path, manifest: manifest)
+        let store = FountainStore(options: opts, wal: wal, manifest: manifest, memtable: memtable, compactor: compactor)
+
+        // Load manifest to seed sequence and discover existing tables.
+        let m = try await manifest.load()
+        await store.setSequence(m.sequence)
+        // TODO: Load existing SSTables into in-memory indexes.
+
+        // Replay WAL into memtable and bootstrap map.
+        let recs = try await wal.replay()
+        for r in recs {
+            try await store.replayRecord(r)
+        }
+        return store
     }
 
     public func snapshot() -> Snapshot {
@@ -153,11 +177,20 @@ public actor FountainStore {
     }
 
     public func collection<C: Codable & Identifiable>(_ name: String, of: C.Type) -> Collection<C> {
-        return Collection<C>(name: name, store: self)
+        let coll = Collection<C>(name: name, store: self)
+        if let items = bootstrap.removeValue(forKey: name) {
+            Task { await coll.bootstrap(items) }
+        }
+        return coll
     }
 
     // MARK: - Internals
     private let options: StoreOptions
+    internal let wal: WAL
+    internal let manifest: ManifestStore
+    internal let memtable: Memtable
+    internal let compactor: Compactor
+    private var bootstrap: [String: [(Data, Data?, UInt64)]] = [:]
     private var sequence: UInt64 = 0
     private var metrics = Metrics()
 
@@ -211,8 +244,61 @@ public actor FountainStore {
     internal func log(_ event: LogEvent) {
         options.logger?(event)
     }
+    
+    internal func flushMemtableIfNeeded() async throws {
+        if await memtable.isOverLimit() {
+            try await flushMemtable()
+        }
+    }
 
-    private init(options: StoreOptions) { self.options = options }
+    private func setSequence(_ seq: UInt64) {
+        self.sequence = seq
+    }
+
+    private func addBootstrap(collection: String, id: Data, value: Data?, sequence: UInt64) {
+        bootstrap[collection, default: []].append((id, value, sequence))
+    }
+
+    internal func replayRecord(_ r: WALRecord) async throws {
+        let payload = try JSONDecoder().decode(WALPayload.self, from: r.payload)
+        await memtable.put(MemtableEntry(key: payload.key, value: payload.value, sequence: r.sequence))
+        if let (col, idData) = splitKey(payload.key) {
+            addBootstrap(collection: col, id: idData, value: payload.value, sequence: r.sequence)
+        }
+    }
+
+    private func flushMemtable() async throws {
+        let drained = await memtable.drain()
+        guard !drained.isEmpty else { return }
+        // Write a new SSTable.
+        let url = options.path.appendingPathComponent(UUID().uuidString + ".sst")
+        let entries = drained.map { (TableKey(raw: $0.key), TableValue(raw: $0.value ?? Data())) }
+            .sorted { $0.0.raw.lexicographicallyPrecedes($1.0.raw) }
+        let handle = try await SSTable.create(at: url, entries: entries)
+        var m = try await manifest.load()
+        m.sequence = sequence
+        m.tables[handle.id] = handle.path
+        try await manifest.save(m)
+        await memtable.fireFlushCallbacks(drained)
+        // Schedule background compaction.
+        Task { await compactor.tick() }
+    }
+
+    private func splitKey(_ data: Data) -> (String, Data)? {
+        guard let idx = data.firstIndex(of: 0) else { return nil }
+        let nameData = data[..<idx]
+        let idData = data[data.index(after: idx)...]
+        guard let name = String(data: nameData, encoding: .utf8) else { return nil }
+        return (name, Data(idData))
+    }
+
+    private init(options: StoreOptions, wal: WAL, manifest: ManifestStore, memtable: Memtable, compactor: Compactor) {
+        self.options = options
+        self.wal = wal
+        self.manifest = manifest
+        self.memtable = memtable
+        self.compactor = compactor
+    }
 }
 
 public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashable {
@@ -256,6 +342,91 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
     public init(name: String, store: FountainStore) {
         self.name = name
         self.store = store
+    }
+
+    private func encodeKey(_ id: C.ID) throws -> Data {
+        var data = Data(name.utf8)
+        data.append(0)
+        data.append(try JSONEncoder().encode(id))
+        return data
+    }
+
+    private func performPut(_ value: C, sequence: UInt64) {
+        let old = data[value.id]?.last?.1
+        data[value.id, default: []].append((sequence, value))
+        for storage in indexes.values {
+            switch storage {
+            case .unique(let idx):
+                let key = value[keyPath: idx.keyPath]
+                if let old = old {
+                    let oldKey = old[keyPath: idx.keyPath]
+                    if oldKey != key {
+                        idx.map[oldKey, default: []].append((sequence, nil))
+                    }
+                }
+                idx.map[key, default: []].append((sequence, value.id))
+            case .multi(let idx):
+                let key = value[keyPath: idx.keyPath]
+                if let old = old {
+                    let oldKey = old[keyPath: idx.keyPath]
+                    if oldKey != key {
+                        var oldArr = idx.map[oldKey]?.last?.1 ?? []
+                        if let pos = oldArr.firstIndex(of: value.id) { oldArr.remove(at: pos) }
+                        idx.map[oldKey, default: []].append((sequence, oldArr))
+                    }
+                }
+                var arr = idx.map[key]?.last?.1 ?? []
+                if !arr.contains(value.id) { arr.append(value.id) }
+                idx.map[key, default: []].append((sequence, arr))
+            case .fts(let idx):
+                let docID = "\(value.id)"
+                if old != nil { idx.index.remove(docID: docID) }
+                idx.index.add(docID: docID, text: value[keyPath: idx.keyPath])
+                idx.idMap[docID] = value.id
+            case .vector(let idx):
+                let docID = "\(value.id)"
+                if old != nil { idx.index.remove(id: docID) }
+                idx.index.add(id: docID, vector: value[keyPath: idx.keyPath])
+                idx.idMap[docID] = value.id
+            }
+        }
+    }
+
+    private func performDelete(id: C.ID, sequence: UInt64) {
+        let old = data[id]?.last?.1
+        data[id, default: []].append((sequence, nil))
+        guard let oldVal = old else { return }
+        for storage in indexes.values {
+            switch storage {
+            case .unique(let idx):
+                let key = oldVal[keyPath: idx.keyPath]
+                idx.map[key, default: []].append((sequence, nil))
+            case .multi(let idx):
+                let key = oldVal[keyPath: idx.keyPath]
+                var arr = idx.map[key]?.last?.1 ?? []
+                if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
+                idx.map[key, default: []].append((sequence, arr))
+            case .fts(let idx):
+                let docID = "\(id)"
+                idx.index.remove(docID: docID)
+                idx.idMap.removeValue(forKey: docID)
+            case .vector(let idx):
+                let docID = "\(id)"
+                idx.index.remove(id: docID)
+                idx.idMap.removeValue(forKey: docID)
+            }
+        }
+    }
+
+    internal func bootstrap(_ items: [(Data, Data?, UInt64)]) async {
+        for (idData, valData, seq) in items {
+            guard let id = try? JSONDecoder().decode(C.ID.self, from: idData) else { continue }
+            if let vd = valData, let value = try? JSONDecoder().decode(C.self, from: vd) {
+                performPut(value, sequence: seq)
+            } else {
+                performDelete(id: id, sequence: seq)
+            }
+        }
     }
 
     public enum BatchOp {
@@ -340,7 +511,8 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         } else {
             seq = await store.nextSequence()
         }
-        let old = data[value.id]?.last?.1
+
+        // Check unique constraints before persisting.
         for (name, storage) in indexes {
             switch storage {
             case .unique(let idx):
@@ -348,49 +520,22 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 if let existing = idx.map[key]?.last?.1, existing != value.id {
                     throw CollectionError.uniqueConstraintViolation(index: name, key: key)
                 }
-            case .multi:
-                continue
-            case .fts, .vector:
+            case .multi, .fts, .vector:
                 continue
             }
         }
-        data[value.id, default: []].append((seq, value))
-        for storage in indexes.values {
-            switch storage {
-            case .unique(let idx):
-                let key = value[keyPath: idx.keyPath]
-                if let old = old {
-                    let oldKey = old[keyPath: idx.keyPath]
-                    if oldKey != key {
-                        idx.map[oldKey, default: []].append((seq, nil))
-                    }
-                }
-                idx.map[key, default: []].append((seq, value.id))
-            case .multi(let idx):
-                let key = value[keyPath: idx.keyPath]
-                if let old = old {
-                    let oldKey = old[keyPath: idx.keyPath]
-                    if oldKey != key {
-                        var oldArr = idx.map[oldKey]?.last?.1 ?? []
-                        if let pos = oldArr.firstIndex(of: value.id) { oldArr.remove(at: pos) }
-                        idx.map[oldKey, default: []].append((seq, oldArr))
-                    }
-                }
-                var arr = idx.map[key]?.last?.1 ?? []
-                if !arr.contains(value.id) { arr.append(value.id) }
-                idx.map[key, default: []].append((seq, arr))
-            case .fts(let idx):
-                let docID = "\(value.id)"
-                if old != nil { idx.index.remove(docID: docID) }
-                idx.index.add(docID: docID, text: value[keyPath: idx.keyPath])
-                idx.idMap[docID] = value.id
-            case .vector(let idx):
-                let docID = "\(value.id)"
-                if old != nil { idx.index.remove(id: docID) }
-                idx.index.add(id: docID, vector: value[keyPath: idx.keyPath])
-                idx.idMap[docID] = value.id
-            }
-        }
+
+        // WAL + memtable
+        let keyData = try encodeKey(value.id)
+        let valData = try JSONEncoder().encode(value)
+        let payload = WALPayload(key: keyData, value: valData)
+        try await store.wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(payload), crc32: 0))
+        try await store.wal.sync()
+        await store.memtable.put(MemtableEntry(key: keyData, value: valData, sequence: seq))
+        try await store.flushMemtableIfNeeded()
+
+        // Apply in-memory structures.
+        performPut(value, sequence: seq)
     }
 
     public func get(id: C.ID, snapshot: Snapshot? = nil) async throws -> C? {
@@ -418,29 +563,15 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         } else {
             seq = await store.nextSequence()
         }
-        let old = data[id]?.last?.1
-        data[id, default: []].append((seq, nil))
-        guard let oldVal = old else { return }
-        for storage in indexes.values {
-            switch storage {
-            case .unique(let idx):
-                let key = oldVal[keyPath: idx.keyPath]
-                idx.map[key, default: []].append((seq, nil))
-            case .multi(let idx):
-                let key = oldVal[keyPath: idx.keyPath]
-                var arr = idx.map[key]?.last?.1 ?? []
-                if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
-                idx.map[key, default: []].append((seq, arr))
-            case .fts(let idx):
-                let docID = "\(id)"
-                idx.index.remove(docID: docID)
-                idx.idMap.removeValue(forKey: docID)
-            case .vector(let idx):
-                let docID = "\(id)"
-                idx.index.remove(id: docID)
-                idx.idMap.removeValue(forKey: docID)
-            }
-        }
+
+        let keyData = try encodeKey(id)
+        let payload = WALPayload(key: keyData, value: nil)
+        try await store.wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(payload), crc32: 0))
+        try await store.wal.sync()
+        await store.memtable.put(MemtableEntry(key: keyData, value: nil, sequence: seq))
+        try await store.flushMemtableIfNeeded()
+
+        performDelete(id: id, sequence: seq)
     }
 
     public func byIndex(_ name: String, equals key: String, snapshot: Snapshot? = nil) async throws -> [C] {
