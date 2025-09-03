@@ -74,14 +74,14 @@ public actor WAL {
         var offset = 0
         var res: [WALRecord] = []
         while offset + 16 <= data.count {
-            let seq = UInt64(bigEndian: data[offset..<(offset+8)].withUnsafeBytes { $0.load(as: UInt64.self) })
+            let seq = UInt64(bigEndian: data[offset..<(offset+8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) })
             offset += 8
-            let len = UInt32(bigEndian: data[offset..<(offset+4)].withUnsafeBytes { $0.load(as: UInt32.self) })
+            let len = UInt32(bigEndian: data[offset..<(offset+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
             offset += 4
             if offset + Int(len) + 4 > data.count { break }
             let payload = data[offset..<(offset+Int(len))]
             offset += Int(len)
-            let stored = UInt32(bigEndian: data[offset..<(offset+4)].withUnsafeBytes { $0.load(as: UInt32.self) })
+            let stored = UInt32(bigEndian: data[offset..<(offset+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
             offset += 4
             if crc32(Data(payload)) != stored { break }
             res.append(WALRecord(sequence: seq, payload: Data(payload), crc32: stored))
