@@ -30,12 +30,15 @@ final class LoggingTests: XCTestCase {
         try await items.put(.init(id: 1, body: "a"))
         _ = try await items.get(id: 1)
         _ = try await items.byIndex("byBody", equals: "a")
+        _ = try await items.scanIndex("byBody", prefix: "a")
         _ = try await items.scan()
         try await items.delete(id: 1)
         try await items.batch([.put(.init(id: 2, body: "b")), .delete(2)])
         let events = sink.snapshot()
         let expected: [LogEvent] = [
             .put(collection: "items"),
+            .get(collection: "items"),
+            .indexLookup(collection: "items", index: "byBody"),
             .get(collection: "items"),
             .indexLookup(collection: "items", index: "byBody"),
             .get(collection: "items"),

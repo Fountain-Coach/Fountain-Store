@@ -320,6 +320,40 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         }
     }
 
+    public func scanIndex(_ name: String, prefix: String, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
+        await store.record(.indexLookup)
+        await store.log(.indexLookup(collection: self.name, index: name))
+        guard let storage = indexes[name] else { return [] }
+        let seqLimit = snapshot?.sequence ?? UInt64.max
+        var items: [(String, C)] = []
+        switch storage {
+        case .unique(let idx):
+            for (key, versions) in idx.map {
+                guard key.hasPrefix(prefix),
+                      let id = versions.last(where: { $0.0 <= seqLimit })?.1,
+                      let val = try await get(id: id, snapshot: snapshot) else { continue }
+                items.append((key, val))
+            }
+        case .multi(let idx):
+            let encoder = JSONEncoder()
+            for (key, versions) in idx.map {
+                guard key.hasPrefix(prefix),
+                      let ids = versions.last(where: { $0.0 <= seqLimit })?.1 else { continue }
+                var pairs: [(Data, C)] = []
+                for id in ids {
+                    if let val = try await get(id: id, snapshot: snapshot) {
+                        let data = try encoder.encode(id)
+                        pairs.append((data, val))
+                    }
+                }
+                pairs.sort { $0.0.lexicographicallyPrecedes($1.0) }
+                for (_, val) in pairs { items.append((key, val)) }
+            }
+        }
+        items.sort { $0.0 < $1.0 }
+        return items.prefix(limit).map { $0.1 }
+    }
+
     public func scan(prefix: Data? = nil, limit: Int = 100, snapshot: Snapshot? = nil) async throws -> [C] {
         await store.record(.scan)
         await store.log(.scan(collection: name))
