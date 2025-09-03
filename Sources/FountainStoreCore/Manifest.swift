@@ -23,10 +23,24 @@ public actor ManifestStore {
     private let url: URL
     public init(url: URL) { self.url = url }
     public func load() async throws -> Manifest {
-        // TODO: load or initialize new manifest
-        return Manifest()
+        if !FileManager.default.fileExists(atPath: url.path) {
+            return Manifest()
+        }
+        let data = try Data(contentsOf: url)
+        do {
+            return try JSONDecoder().decode(Manifest.self, from: data)
+        } catch {
+            throw ManifestError.corrupt
+        }
     }
     public func save(_ m: Manifest) async throws {
-        // TODO: atomic write: write temp then rename.
+        let data = try JSONEncoder().encode(m)
+        let tmp = url.appendingPathExtension("tmp")
+        try data.write(to: tmp)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            try fm.removeItem(at: url)
+        }
+        try fm.moveItem(at: tmp, to: url)
     }
 }
