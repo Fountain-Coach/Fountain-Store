@@ -5,6 +5,8 @@
 - Put/Get/Delete round trips
 - MVCC history retrieval
 - Range/prefix scans
+- WAL append and replay on startup
+- SSTable read path after memtable flush and restart
 - Crash recovery matrix (kill at WAL append, after append before fsync, after fsync before memtable apply, etc.)
 - Manifest integrity
 

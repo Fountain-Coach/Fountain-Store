@@ -55,6 +55,12 @@
 - FTS (inverted index, analyzers, BM25).
 - Vector (HNSW; cosine/L2).
 
+**In Progress**
+
+- [ ] WAL integration
+- [ ] Crash recovery
+- [ ] SSTable read path
+
 ---
 
 ## Directory Structure
@@ -63,8 +69,8 @@
 Sources/
   FountainStore/        # public API
   FountainStoreCore/    # engine internals (WAL, SSTable, Manifest, Bloom, Memtable, Compactor)
-  FountainFTS/          # optional module (stub now)
-  FountainVector/       # optional module (stub now)
+  FountainFTS/          # optional module
+  FountainVector/       # optional module
 Tests/
   FountainStoreTests/   # unit & property tests
 docs/
@@ -72,6 +78,8 @@ docs/
   TESTPLAN.md
   ROADMAP.md
 ```
+
+`FountainFTS` and `FountainVector` are currently stubs awaiting full implementations.
 
 ---
 
