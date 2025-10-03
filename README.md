@@ -10,6 +10,55 @@ See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
 Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
 
+## What’s New (vNext milestones)
+
+- Persistent MVCC across restarts (sequence stored in SSTables)
+- Transactional WAL replay (BEGIN/OP/COMMIT) and store-level multi-collection batch
+- Index persistence in manifest; background rebuild on define
+- SSTable per-block CRC and explicit Bloom serialization
+- Compaction status with virtual levels and debt heuristic; simple backpressure under high debt
+- Read caching (block cache) honoring `cacheBytes`
+- Backup/restore API (`createBackup`, `listBackups`, `restoreBackup`)
+- Multi-index expressiveness: array-valued key paths and extractor closures (`.multiValues { ... }`)
+- Optional AdminService and lightweight HTTP server target
+
+### Optional HTTP Server
+
+An optional `FountainStoreHTTPServer` executable is provided for basic admin/observability:
+
+```
+swift run FountainStoreHTTPServer
+# or
+FS_PATH=/tmp/fs PORT=8080 swift run FountainStoreHTTPServer
+```
+
+Endpoints (minimal subset):
+- `GET /health` – ok status
+- `GET /status` – store status
+- `GET /metrics` – metrics snapshot
+
+Note: the server is a minimal wiring and can be extended to cover the full OpenAPI in `docs/openapi-fountainstore.yaml`.
+
+### Backup/Restore
+
+```
+let ref = try await store.createBackup(note: "pre-migration")
+let backups = await store.listBackups()
+try await store.restoreBackup(id: ref.id)
+```
+
+Backups are stored under `<storePath>/backups/<id>/` and include `MANIFEST.json`, `wal.log`, and SSTable files.
+
+### Multi-Value Indexes
+
+```
+struct Doc: Codable, Identifiable { var id: Int; var tags: [String] }
+let coll = await store.collection("docs", of: Doc.self)
+try await coll.define(.init(name: "byTag", kind: .multi(\Doc.tags)))
+try await coll.define(.init(name: "byTag2", kind: .multiValues { $0.tags }))
+```
+
+
 ## Installation
 
 FountainStore is distributed as a Swift Package. To add it to your project, include the following dependency in your `Package.swift`:

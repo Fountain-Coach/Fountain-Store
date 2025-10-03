@@ -12,6 +12,10 @@ let package = Package(
         .library(name: "FountainFTS", targets: ["FountainFTS"]),
         .library(name: "FountainVector", targets: ["FountainVector"]),
         .library(name: "FountainStoreHTTP", targets: ["FountainStoreHTTP"]),
+        .executable(name: "FountainStoreHTTPServer", targets: ["FountainStoreHTTPServer"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.59.0")
     ],
     targets: [
         .target(name: "FountainStore", dependencies: ["FountainStoreCore", "FountainFTS", "FountainVector"]),
@@ -19,6 +23,11 @@ let package = Package(
         .target(name: "FountainFTS", dependencies: ["FountainStoreCore"]),
         .target(name: "FountainVector", dependencies: ["FountainStoreCore"]),
         .target(name: "FountainStoreHTTP", dependencies: ["FountainStore"]),
+        .executableTarget(name: "FountainStoreHTTPServer", dependencies: [
+            "FountainStoreHTTP",
+            .product(name: "NIO", package: "swift-nio"),
+            .product(name: "NIOHTTP1", package: "swift-nio")
+        ]),
         .testTarget(name: "FountainStoreTests", dependencies: ["FountainStore", "FountainFTS", "FountainVector"]),
         .testTarget(name: "FountainStoreHTTPTests", dependencies: ["FountainStoreHTTP"]),
         .executableTarget(name: "FountainStoreBenchmarks", dependencies: ["FountainStore"]),
