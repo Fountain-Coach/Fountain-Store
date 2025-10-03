@@ -390,7 +390,7 @@ public actor FountainStore {
     private func registerValidateHook(_ collection: String, _ hook: @escaping @Sendable ([(Bool, Data, Data?)]) async throws -> Void) {
         validateHooks[collection] = hook
     }
-
+    
     internal func loadSSTables(_ manifest: Manifest) async throws {
         for (id, url) in manifest.tables {
             let handle = SSTableHandle(id: id, path: url)
@@ -525,6 +525,24 @@ public actor FountainStore {
         data.append(0)
         data.append(idData)
         return data
+    }
+
+    // Persist or update index definition for a collection in the manifest catalog.
+    internal func persistIndexDefinition(collection: String, name: String, kind: String, field: String? = nil) async throws {
+        var m = try await manifest.load()
+        var defs = m.indexCatalog[collection] ?? []
+        if let idx = defs.firstIndex(where: { $0.name == name }) {
+            defs[idx] = IndexDef(name: name, kind: kind, field: field)
+        } else {
+            defs.append(IndexDef(name: name, kind: kind, field: field))
+        }
+        m.indexCatalog[collection] = defs
+        try await manifest.save(m)
+    }
+
+    public func listIndexDefinitions(_ collection: String) async throws -> [IndexDef] {
+        let m = try await manifest.load()
+        return m.indexCatalog[collection] ?? []
     }
 
     private init(options: StoreOptions, wal: WAL, manifest: ManifestStore, memtable: Memtable, compactor: Compactor) {
@@ -747,6 +765,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.map[key, default: []].append((seq, id))
             }
             indexes[index.name] = .unique(idx)
+            try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "unique")
         case .multi(let path):
             guard let kp = path as? KeyPath<C, String> else { return }
             let idx = IndexStorage.Multi(keyPath: kp)
@@ -758,6 +777,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.map[key, default: []].append((seq, arr))
             }
             indexes[index.name] = .multi(idx)
+            try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "multi")
         case .fts(let path, analyzer: let analyzer):
             guard let kp = path as? KeyPath<C, String> else { return }
             let idx = IndexStorage.FTS(keyPath: kp, analyzer: analyzer)
@@ -768,6 +788,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.idMap[docID] = id
             }
             indexes[index.name] = .fts(idx)
+            try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "fts")
         case .vector(let path):
             guard let kp = path as? KeyPath<C, [Double]> else { return }
             let idx = IndexStorage.Vector(keyPath: kp)
@@ -778,6 +799,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 idx.idMap[docID] = id
             }
             indexes[index.name] = .vector(idx)
+            try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "vector")
         }
     }
 

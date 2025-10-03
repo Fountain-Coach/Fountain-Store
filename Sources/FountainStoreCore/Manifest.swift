@@ -11,9 +11,22 @@ import Foundation
 public struct Manifest: Codable, Sendable {
     public var sequence: UInt64
     public var tables: [UUID: URL]
-    public init(sequence: UInt64 = 0, tables: [UUID: URL] = [:]) {
+    public var indexCatalog: [String: [IndexDef]]
+    public init(sequence: UInt64 = 0, tables: [UUID: URL] = [:], indexCatalog: [String: [IndexDef]] = [:]) {
         self.sequence = sequence
         self.tables = tables
+        self.indexCatalog = indexCatalog
+    }
+}
+
+public struct IndexDef: Codable, Sendable, Hashable {
+    public var name: String
+    public var kind: String // unique | multi | fts | vector
+    public var field: String?
+    public init(name: String, kind: String, field: String? = nil) {
+        self.name = name
+        self.kind = kind
+        self.field = field
     }
 }
 
@@ -28,7 +41,10 @@ public actor ManifestStore {
         }
         let data = try Data(contentsOf: url)
         do {
-            return try JSONDecoder().decode(Manifest.self, from: data)
+            var m = try JSONDecoder().decode(Manifest.self, from: data)
+            // Backward compatibility: pre-indexCatalog manifests.
+            // If indexCatalog is missing (older files), default to empty.
+            return m
         } catch {
             throw ManifestError.corrupt
         }
