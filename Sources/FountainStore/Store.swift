@@ -286,8 +286,11 @@ public actor FountainStore {
             let handle = SSTableHandle(id: id, path: url)
             let entries = try SSTable.scan(handle)
             for (k, v) in entries {
-                if let (col, idData) = splitKey(k.raw) {
-                    addBootstrap(collection: col, id: idData, value: v.raw, sequence: manifest.sequence)
+                // Decode SSTable key which may include an appended sequence number.
+                if let decoded = decodeSSTableKey(k.raw) {
+                    let seq = decoded.seq ?? manifest.sequence
+                    let val: Data? = v.raw.isEmpty ? nil : v.raw
+                    addBootstrap(collection: decoded.collection, id: decoded.idData, value: val, sequence: seq)
                 }
             }
         }
@@ -306,7 +309,10 @@ public actor FountainStore {
         guard !drained.isEmpty else { return }
         // Write a new SSTable.
         let url = options.path.appendingPathComponent(UUID().uuidString + ".sst")
-        let entries = drained.map { (TableKey(raw: $0.key), TableValue(raw: $0.value ?? Data())) }
+        let entries = drained.map {
+            let k = sstableKeyAppendingSeq($0.key, seq: $0.sequence)
+            return (TableKey(raw: k), TableValue(raw: $0.value ?? Data()))
+        }
             .sorted { $0.0.raw.lexicographicallyPrecedes($1.0.raw) }
         let handle = try await SSTable.create(at: url, entries: entries)
         var m = try await manifest.load()
@@ -328,6 +334,39 @@ public actor FountainStore {
         let idData = data[data.index(after: idx)...]
         guard let name = String(data: nameData, encoding: .utf8) else { return nil }
         return (name, Data(idData))
+    }
+
+    // MARK: - SSTable key encoding/decoding (MVCC persistent sequences)
+
+    /// Returns a new key by appending a separator and the big-endian sequence number.
+    /// Base key format: collectionName\0idJSON
+    /// Appended format:  + "\0" + seq(8 bytes, big endian)
+    private func sstableKeyAppendingSeq(_ baseKey: Data, seq: UInt64) -> Data {
+        var out = baseKey
+        out.append(0)
+        var be = seq.bigEndian
+        withUnsafeBytes(of: &be) { out.append(contentsOf: $0) }
+        return out
+    }
+
+    /// Decodes an SSTable key which may or may not include an appended sequence number.
+    /// Returns collection name, id JSON bytes, and optional sequence.
+    private func decodeSSTableKey(_ data: Data) -> (collection: String, idData: Data, seq: UInt64?)? {
+        guard let firstSep = data.firstIndex(of: 0) else { return nil }
+        let nameData = data[..<firstSep]
+        guard let name = String(data: nameData, encoding: .utf8) else { return nil }
+        // Check for trailing "\0" + 8-byte seq.
+        if data.count >= firstSep + 1 + 1 + 8 {
+            let sep2Pos = data.count - 9
+            if data[sep2Pos] == 0 {
+                let idBytes = data[(firstSep + 1)..<sep2Pos]
+                let seqBytes = data[(sep2Pos + 1)..<data.count]
+                let seq = seqBytes.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.bigEndian
+                return (name, Data(idBytes), seq)
+            }
+        }
+        let idBytes = data[(firstSep + 1)..<data.count]
+        return (name, Data(idBytes), nil)
     }
 
     private init(options: StoreOptions, wal: WAL, manifest: ManifestStore, memtable: Memtable, compactor: Compactor) {
