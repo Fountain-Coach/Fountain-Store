@@ -585,6 +585,106 @@ public actor FountainStore {
         return m.indexCatalog[collection] ?? []
     }
 
+    // MARK: - Backups
+    public struct BackupRef: Sendable, Hashable, Codable {
+        public let id: String
+        public let createdAt: String
+        public let note: String?
+        public let sizeBytes: Int64
+    }
+
+    public func createBackup(note: String? = nil) async throws -> BackupRef {
+        // Quiesce writes (we are in store actor). Make state durable.
+        try await wal.sync()
+        // Flush current memtable (if any) to reduce WAL replay on restore.
+        try await flushMemtable()
+        try await wal.sync()
+        let m = try await manifest.load()
+        let fm = FileManager.default
+        let backupsDir = options.path.appendingPathComponent("backups")
+        try? fm.createDirectory(at: backupsDir, withIntermediateDirectories: true)
+        let bid = UUID().uuidString
+        let dir = backupsDir.appendingPathComponent(bid)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var total: Int64 = 0
+        func copy(_ src: URL, _ dst: URL) throws {
+            if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+            try fm.copyItem(at: src, to: dst)
+            if let s = try? fm.attributesOfItem(atPath: dst.path)[.size] as? NSNumber { total += s.int64Value }
+        }
+        let manifestPath = options.path.appendingPathComponent("MANIFEST.json")
+        let walPath = options.path.appendingPathComponent("wal.log")
+        if fm.fileExists(atPath: manifestPath.path) { try copy(manifestPath, dir.appendingPathComponent("MANIFEST.json")) }
+        if fm.fileExists(atPath: walPath.path) { try copy(walPath, dir.appendingPathComponent("wal.log")) }
+        for (_, url) in m.tables {
+            let name = url.lastPathComponent
+            if fm.fileExists(atPath: url.path) {
+                try copy(url, dir.appendingPathComponent(name))
+            }
+        }
+        let ref = BackupRef(id: bid, createdAt: ISO8601DateFormatter().string(from: Date()), note: note, sizeBytes: total)
+        let meta = try JSONEncoder().encode(ref)
+        try meta.write(to: dir.appendingPathComponent("backup.json"))
+        return ref
+    }
+
+    public func listBackups() -> [BackupRef] {
+        let fm = FileManager.default
+        let backupsDir = options.path.appendingPathComponent("backups")
+        guard let contents = try? fm.contentsOfDirectory(at: backupsDir, includingPropertiesForKeys: nil) else { return [] }
+        var refs: [BackupRef] = []
+        for folder in contents {
+            let meta = folder.appendingPathComponent("backup.json")
+            if let data = try? Data(contentsOf: meta), let ref = try? JSONDecoder().decode(BackupRef.self, from: data) {
+                refs.append(ref)
+            }
+        }
+        return refs.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    public func restoreBackup(id: String) async throws {
+        // Quiesce writes
+        let fm = FileManager.default
+        let backupsDir = options.path.appendingPathComponent("backups")
+        let dir = backupsDir.appendingPathComponent(id)
+        // Copy MANIFEST and referenced SSTables and wal
+        let manifestSrc = dir.appendingPathComponent("MANIFEST.json")
+        let walSrc = dir.appendingPathComponent("wal.log")
+        // Remove current SSTables referenced by manifest
+        if let current = try? await manifest.load() {
+            for (_, url) in current.tables { try? fm.removeItem(at: url) }
+        }
+        // Copy SSTables from backup folder (any .sst file)
+        if let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for f in files where f.pathExtension == "sst" {
+                let dst = options.path.appendingPathComponent(f.lastPathComponent)
+                if fm.fileExists(atPath: dst.path) { try? fm.removeItem(at: dst) }
+                try fm.copyItem(at: f, to: dst)
+            }
+        }
+        // Write manifest with corrected URLs
+        if fm.fileExists(atPath: manifestSrc.path) {
+            let data = try Data(contentsOf: manifestSrc)
+            let old = try JSONDecoder().decode(Manifest.self, from: data)
+            var fixed = Manifest(sequence: old.sequence, tables: [:], indexCatalog: old.indexCatalog)
+            for (id, url) in old.tables {
+                let dst = options.path.appendingPathComponent(url.lastPathComponent)
+                fixed.tables[id] = dst
+            }
+            try await manifest.save(fixed)
+        }
+        // Replace WAL
+        let walDst = options.path.appendingPathComponent("wal.log")
+        if fm.fileExists(atPath: walSrc.path) {
+            if fm.fileExists(atPath: walDst.path) { try? fm.removeItem(at: walDst) }
+            try fm.copyItem(at: walSrc, to: walDst)
+        }
+        // Reset bootstrap; on next collection() calls, data will reflect restored state after replay
+        bootstrap.removeAll()
+        let m = try await manifest.load()
+        try await loadSSTables(m)
+    }
+
     private init(options: StoreOptions, wal: WAL, manifest: ManifestStore, memtable: Memtable, compactor: Compactor) {
         self.options = options
         self.wal = wal
