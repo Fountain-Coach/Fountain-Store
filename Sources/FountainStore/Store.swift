@@ -311,6 +311,9 @@ public actor FountainStore {
 
     /// Returns a handle to the named collection for document type `C`.
     public func collection<C: Codable & Identifiable>(_ name: String, of: C.Type) -> Collection<C> {
+        if let any = collectionsCache[name], let cached = any as? Collection<C> {
+            return cached
+        }
         let coll = Collection<C>(name: name, store: self)
         if let items = bootstrap.removeValue(forKey: name) {
             Task { await coll.bootstrap(items) }
@@ -321,6 +324,7 @@ public actor FountainStore {
         registerValidateHook(name) { rawOps in
             try await coll.prevalidateUnique(rawOps: rawOps)
         }
+        collectionsCache[name] = coll
         return coll
     }
 
@@ -337,6 +341,8 @@ public actor FountainStore {
     private var applyHooks: [String: @Sendable (Data, Data?, UInt64) async -> Void] = [:]
     // Hook to prevalidate unique constraints for a batch (per collection).
     private var validateHooks: [String: @Sendable ([(Bool, Data, Data?)]) async throws -> Void] = [:]
+    // Cache of live collection actors by name (type-erased).
+    private var collectionsCache: [String: Any] = [:]
     // Replay-time transaction buffers (BEGIN/OP/COMMIT); cleared after open.
     private var replayActiveTx: Set<String> = []
     private var replayPendingOps: [String: [(UInt64, Data, Data?)]] = [:]
@@ -417,6 +423,9 @@ public actor FountainStore {
 
     private func registerApplyHook(_ collection: String, _ hook: @escaping @Sendable (Data, Data?, UInt64) async -> Void) {
         applyHooks[collection] = hook
+    }
+    public func listCollections() -> [String] {
+        Array(applyHooks.keys).sorted()
     }
     private func registerValidateHook(_ collection: String, _ hook: @escaping @Sendable ([(Bool, Data, Data?)]) async throws -> Void) {
         validateHooks[collection] = hook
