@@ -438,6 +438,19 @@ public actor FountainStore {
     public func listCollections() -> [String] {
         Array(applyHooks.keys).sorted()
     }
+
+    /// Drops a collection from the live store catalog. This unregisters live hooks and
+    /// removes index catalog entries. It does not rewrite existing SSTables; use higher
+    /// level deletion to remove records if desired.
+    public func dropCollection(_ name: String) async throws {
+        collectionsCache.removeValue(forKey: name)
+        applyHooks.removeValue(forKey: name)
+        validateHooks.removeValue(forKey: name)
+        // Remove index definitions from manifest catalog for this collection.
+        var m = try await manifest.load()
+        m.indexCatalog.removeValue(forKey: name)
+        try await manifest.save(m)
+    }
     private func registerValidateHook(_ collection: String, _ hook: @escaping @Sendable ([(Bool, Data, Data?)]) async throws -> Void) {
         validateHooks[collection] = hook
     }

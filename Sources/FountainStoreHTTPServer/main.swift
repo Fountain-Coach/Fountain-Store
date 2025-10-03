@@ -74,12 +74,21 @@ final class HTTPHandler: ChannelInboundHandler {
         // Health
         if parts == ["health"], method == .GET {
             let h = await admin.health()
-            return json(h)
+            struct Engine: Codable { let sequence: UInt64; let writable: Bool; let lastFlushMs: Int }
+            struct Health: Codable { let status: String; let engine: Engine }
+            return json(Health(status: "ok", engine: Engine(sequence: h.sequence, writable: true, lastFlushMs: 0)))
         }
         // Status
         if parts == ["status"], method == .GET {
             let s = await admin.status()
-            return json(s)
+            let comp = try? await admin.compactionStatus()
+            struct Status: Codable {
+                let sequence: UInt64
+                let collectionsCount: Int
+                let collections: [AdminService.CollectionRef]
+                let compaction: FountainStore.CompactionStatus?
+            }
+            return json(Status(sequence: s.sequence, collectionsCount: s.collectionsCount, collections: s.collections, compaction: comp))
         }
         // Metrics
         if parts == ["metrics"], method == .GET {
@@ -107,13 +116,27 @@ final class HTTPHandler: ChannelInboundHandler {
         if parts.count == 2, parts[0] == "collections", method == .GET {
             let c = parts[1]
             struct Resp: Codable { let name: String; let version: String?; let indexes: [AdminService.IndexDefinition] }
+            let names = await admin.listCollections()
+            guard names.contains(c) else { return problem(.init(title: "not found", status: 404, detail: nil, instance: nil)) }
             let idx = await admin.listIndexDefinitions(c)
             return json(Resp(name: c, version: nil, indexes: idx))
+        }
+        // Drop collection
+        if parts.count == 2, parts[0] == "collections", method == .DELETE {
+            let c = parts[1]
+            let names = await admin.listCollections()
+            guard names.contains(c) else { return problem(.init(title: "not found", status: 404, detail: nil, instance: nil)) }
+            do { try await admin.dropCollection(c) } catch {
+                return problem(.init(title: "drop failed", status: 500, detail: nil, instance: nil))
+            }
+            return Response(status: .noContent, headers: [], body: Data())
         }
         // Indexes list/define
         if parts.count == 3, parts[0] == "collections", parts[2] == "indexes", method == .GET {
             let c = parts[1]
             struct Resp: Codable { let items: [AdminService.IndexDefinition] }
+            let names = await admin.listCollections()
+            guard names.contains(c) else { return problem(.init(title: "not found", status: 404, detail: nil, instance: nil)) }
             let idx = await admin.listIndexDefinitions(c)
             return json(Resp(items: idx))
         }
@@ -227,7 +250,15 @@ final class HTTPHandler: ChannelInboundHandler {
             do { return json(try await admin.compactionStatus()) } catch { return problem(.init(title: "status failed", status: 500, detail: nil, instance: nil)) }
         }
         if parts == ["compaction", "run"], method == .POST {
-            await admin.compactionTick()
+            // Accept body: { mode: tick|full }
+            if let data = rawBody.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let mode = obj["mode"] as? String, mode == "full" {
+                // No explicit full compaction entrypoint; best-effort schedule multiple ticks.
+                for _ in 0..<3 { await admin.compactionTick() }
+            } else {
+                await admin.compactionTick()
+            }
             return Response(status: .accepted, headers: [], body: Data())
         }
         // Transactions

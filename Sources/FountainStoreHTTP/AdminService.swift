@@ -37,6 +37,17 @@ public actor AdminService {
         _ = await store.collection(name, of: HTTPDoc.self)
         return name
     }
+    public func dropCollection(_ name: String) async throws {
+        // Best effort: delete all HTTPDoc records in this collection, then drop from catalog.
+        let coll = await store.collection(name, of: HTTPDoc.self)
+        // Attempt to grab a large batch to cover all items.
+        if let all = try? await coll.scan(prefix: nil, limit: Int.max, snapshot: nil) {
+            for doc in all {
+                try? await coll.delete(id: doc.id)
+            }
+        }
+        try await store.dropCollection(name)
+    }
 
     // MARK: - Indexes
     public struct IndexDefinition: Codable, Sendable, Equatable {
