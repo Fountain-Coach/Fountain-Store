@@ -17,6 +17,7 @@ public actor Compactor {
     private let directory: URL
     private let manifest: ManifestStore
     private var running = false
+    private var lastPending: Int = 0
 
     public init(directory: URL, manifest: ManifestStore) {
         self.directory = directory
@@ -78,7 +79,9 @@ public actor Compactor {
             if !current.isEmpty { groups.append(current) }
 
             // Merge each overlapping group into a new SSTable.
+            var pending = 0
             for g in groups where g.count > 1 {
+                pending += (g.count - 1)
                 var allEntries: [(TableKey, TableValue)] = []
                 for (h, _, _) in g {
                     let entries = try readEntries(h)
@@ -110,9 +113,75 @@ public actor Compactor {
                 m.tables[newHandle.id] = newHandle.path
                 try await manifest.save(m)
             }
+            lastPending = pending
         } catch {
             // Ignore errors for now – compaction is best effort.
         }
+    }
+
+    // MARK: - Status
+    public struct LevelStatus: Sendable, Hashable, Codable {
+        public let level: Int
+        public let tables: Int
+        public let sizeBytes: Int64
+        public init(level: Int, tables: Int, sizeBytes: Int64) {
+            self.level = level; self.tables = tables; self.sizeBytes = sizeBytes
+        }
+    }
+    public struct Status: Sendable, Hashable, Codable {
+        public let running: Bool
+        public let pendingTables: Int
+        public let levels: [LevelStatus]
+        public let debtBytes: Int64
+        public init(running: Bool, pendingTables: Int, levels: [LevelStatus], debtBytes: Int64) {
+            self.running = running; self.pendingTables = pendingTables; self.levels = levels; self.debtBytes = debtBytes
+        }
+    }
+
+    public func status() async throws -> Status {
+        let m = try await manifest.load()
+        let fm = FileManager.default
+        // Compute virtual levels based on file size buckets.
+        // Base size 256KB; level = floor(log2(size/base)) clipped at 0.
+        let base: Int64 = 256 * 1024
+        var byLevel: [Int: (count: Int, bytes: Int64)] = [:]
+        for (_, url) in m.tables {
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            let sz = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let lvl: Int
+            if sz <= 0 { lvl = 0 }
+            else {
+                var t = max(Int64(1), sz / base)
+                var l = 0
+                while t > 1 { t >>= 1; l += 1 }
+                lvl = l
+            }
+            var entry = byLevel[lvl] ?? (0, 0)
+            entry.count += 1
+            entry.bytes += sz
+            byLevel[lvl] = entry
+        }
+        let levels = byLevel.keys.sorted().map { k in
+            LevelStatus(level: k, tables: byLevel[k]!.count, sizeBytes: byLevel[k]!.bytes)
+        }
+        // Simple debt heuristic: allow up to 4 tables at L0; if more, debt is total bytes beyond the first 4 smallest.
+        var debt: Int64 = 0
+        if let l0 = byLevel[0], l0.count > 4 {
+            // accumulate all L0 sizes and estimate debt
+            var sizes: [Int64] = []
+            for (_, url) in m.tables {
+                let attrs = try? fm.attributesOfItem(atPath: url.path)
+                let sz = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                // recompute lvl to filter L0
+                let lvl = (sz <= 0) ? 0 : {
+                    var t = max(Int64(1), sz / base); var l = 0; while t > 1 { t >>= 1; l += 1 }; return l
+                }()
+                if lvl == 0 { sizes.append(sz) }
+            }
+            sizes.sort()
+            for s in sizes.dropFirst(4) { debt += s }
+        }
+        return Status(running: running, pendingTables: lastPending, levels: levels, debtBytes: debt)
     }
 
     // MARK: - Helpers

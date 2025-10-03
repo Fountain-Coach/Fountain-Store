@@ -101,6 +101,27 @@ public extension Collection {
     }
 }
 
+// MARK: - Compaction status
+
+public extension FountainStore {
+    struct CompactionLevelStatus: Sendable, Hashable, Codable {
+        public let level: Int
+        public let tables: Int
+        public let sizeBytes: Int64
+    }
+    struct CompactionStatus: Sendable, Hashable, Codable {
+        public let running: Bool
+        public let pendingTables: Int
+        public let levels: [CompactionLevelStatus]
+        public let debtBytes: Int64
+    }
+    func compactionStatus() async throws -> CompactionStatus {
+        let st = try await compactor.status()
+        let levels = st.levels.map { CompactionLevelStatus(level: $0.level, tables: $0.tables, sizeBytes: $0.sizeBytes) }
+        return CompactionStatus(running: st.running, pendingTables: st.pendingTables, levels: levels, debtBytes: st.debtBytes)
+    }
+}
+
 /// Configuration parameters for opening a `FountainStore`.
 public struct StoreOptions: Sendable {
     public let path: URL
