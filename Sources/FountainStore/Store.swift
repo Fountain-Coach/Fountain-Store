@@ -30,6 +30,7 @@ public extension FountainStore {
 
     func batch(_ ops: [StoreOp], requireSequenceAtLeast: UInt64? = nil) async throws {
         guard !ops.isEmpty else { return }
+        await applyBackpressureIfNeeded()
         if let req = requireSequenceAtLeast {
             let current = await snapshot().sequence
             guard current >= req else { throw TransactionError.sequenceTooLow(required: req, current: current) }
@@ -287,6 +288,8 @@ public actor FountainStore {
         let memtable = Memtable(limit: 1024)
         let compactor = Compactor(directory: opts.path, manifest: manifest)
         let store = FountainStore(options: opts, wal: wal, manifest: manifest, memtable: memtable, compactor: compactor)
+        // Configure SSTable block cache based on options.
+        SSTable.configureCache(capacityBytes: opts.cacheBytes)
 
         // Load manifest to seed sequence and discover existing tables.
         let m = try await manifest.load()
@@ -389,6 +392,13 @@ public actor FountainStore {
 
     internal func log(_ event: LogEvent) {
         options.logger?(event)
+    }
+
+    internal func applyBackpressureIfNeeded() async {
+        // Simple heuristic: if compaction debt is high, yield briefly.
+        if let st = try? await compactor.status(), st.debtBytes > (512 * 1024) {
+            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+        }
     }
     
     internal func flushMemtableIfNeeded() async throws {
@@ -849,6 +859,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     /// Inserts or updates a document in the collection.
     public func put(_ value: C, sequence: UInt64? = nil) async throws {
+        await store.applyBackpressureIfNeeded()
         await store.record(.put)
         await store.log(.put(collection: name))
         let seq: UInt64
@@ -907,6 +918,7 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
 
     /// Removes a document by identifier.
     public func delete(id: C.ID, sequence: UInt64? = nil) async throws {
+        await store.applyBackpressureIfNeeded()
         await store.record(.delete)
         await store.log(.delete(collection: name))
         let seq: UInt64

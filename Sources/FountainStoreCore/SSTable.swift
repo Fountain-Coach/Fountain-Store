@@ -30,6 +30,15 @@ public struct TableValue: Sendable, Hashable {
 public enum SSTableError: Error { case corrupt, notFound }
 
 public actor SSTable {
+    // Optional shared block cache configured by the store.
+    nonisolated(unsafe) static var blockCache: BlockCache?
+    public nonisolated static func configureCache(capacityBytes: Int) {
+        if capacityBytes > 0 {
+            blockCache = BlockCache(capacityBytes: capacityBytes)
+        } else {
+            blockCache = nil
+        }
+    }
     // CRC32 utility (polynomial 0xEDB88320)
     private static let crc32Table: [UInt32] = {
         (0...255).map { i -> UInt32 in
@@ -298,22 +307,31 @@ public actor SSTable {
         }
 
         // Read block and scan entries.
-        try fh.seek(toOffset: blkOff)
-        guard let blockData = try fh.read(upToCount: Int(blkSize)), blockData.count == blkSize else { throw SSTableError.corrupt }
-        guard blockData.count >= 4 else { throw SSTableError.corrupt }
-        let payload = blockData[..<(blockData.count - 4)]
-        let stored = blockData[(blockData.count - 4)..<blockData.count].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
-        let crc = Self.crc32(Data(payload))
-        if crc != stored { throw SSTableError.corrupt }
+        // Try cache
+        let cacheKey = handle.path.path + "|" + String(blkOff) + "|" + String(blkSize)
+        let payload: Data
+        if let c = Self.blockCache, let hit = await c.get(cacheKey) {
+            payload = hit
+        } else {
+            try fh.seek(toOffset: blkOff)
+            guard let blockData = try fh.read(upToCount: Int(blkSize)), blockData.count == blkSize else { throw SSTableError.corrupt }
+            guard blockData.count >= 4 else { throw SSTableError.corrupt }
+            let pl = blockData[..<(blockData.count - 4)]
+            let stored = blockData[(blockData.count - 4)..<blockData.count].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+            let crc = Self.crc32(Data(pl))
+            if crc != stored { throw SSTableError.corrupt }
+            payload = Data(pl)
+            if let c = Self.blockCache { await c.put(cacheKey, data: payload) }
+        }
         var p = payload.startIndex
         while p < payload.endIndex {
-            guard blockData.count - p >= 4 else { break }
+            guard payload.count - p >= 4 else { break }
             let klen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
             p += 4
             guard payload.count - p >= klen else { break }
             let kdata = payload[p..<(p+klen)]
             p += klen
-            guard blockData.count - p >= 4 else { break }
+            guard payload.count - p >= 4 else { break }
             let vlen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
             p += 4
             guard payload.count - p >= vlen else { break }
