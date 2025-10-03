@@ -35,6 +35,21 @@ public extension FountainStore {
             guard current >= req else { throw TransactionError.sequenceTooLow(required: req, current: current) }
         }
         record(.batch)
+        // Pre-commit validation: unique constraints per collection across the batch.
+        var perCollection: [String: [(Bool, Data, Data?)]] = [:]
+        for op in ops {
+            switch op {
+            case .put(let coll, let idData, let valueData):
+                perCollection[coll, default: []].append((true, idData, valueData))
+            case .delete(let coll, let idData):
+                perCollection[coll, default: []].append((false, idData, nil))
+            }
+        }
+        for (coll, items) in perCollection {
+            if let validate = validateHooks[coll] {
+                try await validate(items)
+            }
+        }
         // Allocate sequences for ops in order.
         let start = allocateSequences(ops.count)
         var seq = start
@@ -279,6 +294,9 @@ public actor FountainStore {
         registerApplyHook(name) { idData, valueData, seq in
             await coll.applyCommittedRaw(idData: idData, valueData: valueData, sequence: seq)
         }
+        registerValidateHook(name) { rawOps in
+            try await coll.prevalidateUnique(rawOps: rawOps)
+        }
         return coll
     }
 
@@ -293,6 +311,8 @@ public actor FountainStore {
     private var metrics = Metrics()
     // Hook to apply committed ops to live collections' in-memory state.
     private var applyHooks: [String: @Sendable (Data, Data?, UInt64) async -> Void] = [:]
+    // Hook to prevalidate unique constraints for a batch (per collection).
+    private var validateHooks: [String: @Sendable ([(Bool, Data, Data?)]) async throws -> Void] = [:]
     // Replay-time transaction buffers (BEGIN/OP/COMMIT); cleared after open.
     private var replayActiveTx: Set<String> = []
     private var replayPendingOps: [String: [(UInt64, Data, Data?)]] = [:]
@@ -366,6 +386,9 @@ public actor FountainStore {
 
     private func registerApplyHook(_ collection: String, _ hook: @escaping @Sendable (Data, Data?, UInt64) async -> Void) {
         applyHooks[collection] = hook
+    }
+    private func registerValidateHook(_ collection: String, _ hook: @escaping @Sendable ([(Bool, Data, Data?)]) async throws -> Void) {
+        validateHooks[collection] = hook
     }
 
     internal func loadSSTables(_ manifest: Manifest) async throws {
@@ -571,6 +594,62 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             performPut(value, sequence: sequence)
         } else {
             performDelete(id: id, sequence: sequence)
+        }
+    }
+
+    // Validate unique indexes across a batch of raw ops (put/delete).
+    internal func prevalidateUnique(rawOps: [(Bool, Data, Data?)]) throws {
+        // Build overlay per unique index name: key -> optional id
+        var overlays: [String: [String: C.ID?]] = [:]
+        func idxKey(_ name: String) -> String { name }
+
+        func effective(_ idx: IndexStorage.Unique, _ idxName: String, _ key: String) -> C.ID? {
+            if let over = overlays[idxKey(idxName)]?[key] { return over }
+            return idx.map[key]?.last?.1
+        }
+
+        for (isPut, idData, valueData) in rawOps {
+            guard let id = try? JSONDecoder().decode(C.ID.self, from: idData) else { continue }
+            if isPut {
+                guard let vd = valueData, let value = try? JSONDecoder().decode(C.self, from: vd) else { continue }
+                for (name, storage) in indexes {
+                    if case .unique(let idx) = storage {
+                        let newKey = value[keyPath: idx.keyPath]
+                        // Remove old mapping if key changed.
+                        if let oldVal = data[id]?.last?.1 {
+                            let oldKey = oldVal[keyPath: idx.keyPath]
+                            if oldKey != newKey {
+                                if effective(idx, name, oldKey) == id {
+                                    var m = overlays[idxKey(name)] ?? [:]
+                                    m[oldKey] = nil
+                                    overlays[idxKey(name)] = m
+                                }
+                            }
+                        }
+                        // Check conflict on newKey
+                        if let existing = effective(idx, name, newKey), existing != id {
+                            throw CollectionError.uniqueConstraintViolation(index: name, key: newKey)
+                        }
+                        var m = overlays[idxKey(name)] ?? [:]
+                        m[newKey] = id
+                        overlays[idxKey(name)] = m
+                    }
+                }
+            } else {
+                // delete
+                if let oldVal = data[id]?.last?.1 {
+                    for (name, storage) in indexes {
+                        if case .unique(let idx) = storage {
+                            let oldKey = oldVal[keyPath: idx.keyPath]
+                            if effective(idx, name, oldKey) == id {
+                                var m = overlays[idxKey(name)] ?? [:]
+                                m[oldKey] = nil
+                                overlays[idxKey(name)] = m
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
