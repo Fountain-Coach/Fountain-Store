@@ -39,7 +39,7 @@ M8 — Transactional WAL + multi-collection transactions (0.3.0)
   - Add WAL frames: `BEGIN(txid)`, `OP`, `COMMIT(txid)`; replay ignores uncommitted chunks.
   - New store-level `FountainStore.batch(_ ops: [Operation], requireSequenceAtLeast: ...)` that routes to collections.
 - Tasks:
-  - feat(core): WAL begin/commit markers; idempotent replay.
+  - feat(core): WAL begin/commit markers; idempotent replay. (DELIVERED: replay supports BEGIN/OP/COMMIT and ignores uncommitted ops.)
   - feat(api): store-level batch; keep collection-level batch for BC.
   - test: power-cut simulations at each crash point to assert atomic visibility.
   - docs: transaction semantics and crash-matrix.
@@ -145,4 +145,3 @@ Acceptance criteria per milestone
 - All new tests pass, no regressions in existing suite.
 - Benchmarks show non-regression or documented tradeoffs.
 - MIGRATION updated when on-disk formats change.
-
