@@ -20,6 +20,72 @@ internal enum CrashPoints {
     }
 }
 
+// MARK: - Store-level multi-collection batch API
+
+public extension FountainStore {
+    enum StoreOp: Sendable {
+        case put(collection: String, id: Data, value: Data)
+        case delete(collection: String, id: Data)
+    }
+
+    func batch(_ ops: [StoreOp], requireSequenceAtLeast: UInt64? = nil) async throws {
+        guard !ops.isEmpty else { return }
+        if let req = requireSequenceAtLeast {
+            let current = await snapshot().sequence
+            guard current >= req else { throw TransactionError.sequenceTooLow(required: req, current: current) }
+        }
+        record(.batch)
+        // Allocate sequences for ops in order.
+        let start = allocateSequences(ops.count)
+        var seq = start
+        // Build and append transactional WAL frames.
+        let txid = UUID().uuidString
+        let begin = WALFrame(type: "begin", txid: txid, key: nil, value: nil)
+        try await wal.append(WALRecord(sequence: 0, payload: try JSONEncoder().encode(begin), crc32: 0))
+        var memEntries: [(String, Data, Data?, UInt64)] = []
+        for op in ops {
+            switch op {
+            case .put(let coll, let idData, let valueData):
+                let baseKey = makeBaseKey(collection: coll, idData: idData)
+                let frame = WALFrame(type: "op", txid: txid, key: baseKey, value: valueData)
+                try await wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(frame), crc32: 0))
+                memEntries.append((coll, baseKey, valueData, seq))
+            case .delete(let coll, let idData):
+                let baseKey = makeBaseKey(collection: coll, idData: idData)
+                let frame = WALFrame(type: "op", txid: txid, key: baseKey, value: nil)
+                try await wal.append(WALRecord(sequence: seq, payload: try JSONEncoder().encode(frame), crc32: 0))
+                memEntries.append((coll, baseKey, nil, seq))
+            }
+            seq &+= 1
+        }
+        let commit = WALFrame(type: "commit", txid: txid, key: nil, value: nil)
+        try await wal.append(WALRecord(sequence: 0, payload: try JSONEncoder().encode(commit), crc32: 0))
+        try await wal.sync()
+        try CrashPoints.hit("wal_fsync")
+
+        // Apply to memtable and in-memory collections.
+        for (coll, baseKey, value, s) in memEntries {
+            await memtable.put(MemtableEntry(key: baseKey, value: value, sequence: s))
+            if let hook = applyHooks[coll] {
+                if let (_, idData) = splitKey(baseKey) { await hook(idData, value, s) }
+            }
+        }
+        try await flushMemtableIfNeeded()
+    }
+}
+
+public extension Collection {
+    nonisolated func makeStoreOpPut(_ value: C) throws -> FountainStore.StoreOp {
+        let idData = try JSONEncoder().encode(value.id)
+        let valData = try JSONEncoder().encode(value)
+        return .put(collection: name, id: idData, value: valData)
+    }
+    nonisolated func makeStoreOpDelete(_ id: C.ID) throws -> FountainStore.StoreOp {
+        let idData = try JSONEncoder().encode(id)
+        return .delete(collection: name, id: idData)
+    }
+}
+
 /// Configuration parameters for opening a `FountainStore`.
 public struct StoreOptions: Sendable {
     public let path: URL
@@ -210,6 +276,9 @@ public actor FountainStore {
         if let items = bootstrap.removeValue(forKey: name) {
             Task { await coll.bootstrap(items) }
         }
+        registerApplyHook(name) { idData, valueData, seq in
+            await coll.applyCommittedRaw(idData: idData, valueData: valueData, sequence: seq)
+        }
         return coll
     }
 
@@ -222,6 +291,8 @@ public actor FountainStore {
     private var bootstrap: [String: [(Data, Data?, UInt64)]] = [:]
     private var sequence: UInt64 = 0
     private var metrics = Metrics()
+    // Hook to apply committed ops to live collections' in-memory state.
+    private var applyHooks: [String: @Sendable (Data, Data?, UInt64) async -> Void] = [:]
     // Replay-time transaction buffers (BEGIN/OP/COMMIT); cleared after open.
     private var replayActiveTx: Set<String> = []
     private var replayPendingOps: [String: [(UInt64, Data, Data?)]] = [:]
@@ -291,6 +362,10 @@ public actor FountainStore {
 
     private func addBootstrap(collection: String, id: Data, value: Data?, sequence: UInt64) {
         bootstrap[collection, default: []].append((id, value, sequence))
+    }
+
+    private func registerApplyHook(_ collection: String, _ hook: @escaping @Sendable (Data, Data?, UInt64) async -> Void) {
+        applyHooks[collection] = hook
     }
 
     internal func loadSSTables(_ manifest: Manifest) async throws {
@@ -422,6 +497,13 @@ public actor FountainStore {
         return (name, Data(idBytes), nil)
     }
 
+    private func makeBaseKey(collection: String, idData: Data) -> Data {
+        var data = Data(collection.utf8)
+        data.append(0)
+        data.append(idData)
+        return data
+    }
+
     private init(options: StoreOptions, wal: WAL, manifest: ManifestStore, memtable: Memtable, compactor: Compactor) {
         self.options = options
         self.wal = wal
@@ -480,6 +562,16 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         data.append(0)
         data.append(try JSONEncoder().encode(id))
         return data
+    }
+
+    // Apply a committed op (durable in WAL) to in-memory state.
+    internal func applyCommittedRaw(idData: Data, valueData: Data?, sequence: UInt64) async {
+        guard let id = try? JSONDecoder().decode(C.ID.self, from: idData) else { return }
+        if let vd = valueData, let value = try? JSONDecoder().decode(C.self, from: vd) {
+            performPut(value, sequence: sequence)
+        } else {
+            performDelete(id: id, sequence: sequence)
+        }
     }
 
     private func performPut(_ value: C, sequence: UInt64) {
