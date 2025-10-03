@@ -271,6 +271,7 @@ public struct Index<C>: Sendable {
     public enum Kind: @unchecked Sendable {
         case unique(PartialKeyPath<C>)
         case multi(PartialKeyPath<C>)
+        case multiValues(@Sendable (C) -> [String])
         case fts(PartialKeyPath<C>, analyzer: @Sendable (String) -> [String] = FTSIndex.defaultAnalyzer)
         case vector(PartialKeyPath<C>)
     }
@@ -719,9 +720,19 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
         }
         final class Multi {
-            let keyPath: KeyPath<C, String>
+            let stringKeyPath: KeyPath<C, String>?
+            let arrayKeyPath: KeyPath<C, [String]>?
+            let extractor: (@Sendable (C) -> [String])?
             var map: [String: [(UInt64, [C.ID])]] = [:]
-            init(keyPath: KeyPath<C, String>) { self.keyPath = keyPath }
+            init(stringKeyPath: KeyPath<C, String>) { self.stringKeyPath = stringKeyPath; self.arrayKeyPath = nil; self.extractor = nil }
+            init(arrayKeyPath: KeyPath<C, [String]>) { self.arrayKeyPath = arrayKeyPath; self.stringKeyPath = nil; self.extractor = nil }
+            init(extractor: @escaping @Sendable (C) -> [String]) { self.extractor = extractor; self.stringKeyPath = nil; self.arrayKeyPath = nil }
+            func keys(for value: C) -> [String] {
+                if let kp = stringKeyPath { return [value[keyPath: kp]] }
+                if let akp = arrayKeyPath { return value[keyPath: akp] }
+                if let ex = extractor { return ex(value) }
+                return []
+            }
         }
         final class FTS {
             let keyPath: KeyPath<C, String>
@@ -838,18 +849,21 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 }
                 idx.map[key, default: []].append((sequence, value.id))
             case .multi(let idx):
-                let key = value[keyPath: idx.keyPath]
+                let newKeys = idx.keys(for: value)
                 if let old = old {
-                    let oldKey = old[keyPath: idx.keyPath]
-                    if oldKey != key {
-                        var oldArr = idx.map[oldKey]?.last?.1 ?? []
-                        if let pos = oldArr.firstIndex(of: value.id) { oldArr.remove(at: pos) }
-                        idx.map[oldKey, default: []].append((sequence, oldArr))
+                    let oldKeys = idx.keys(for: old)
+                    // Remove from keys no longer present
+                    for k in oldKeys where !newKeys.contains(k) {
+                        var arr = idx.map[k]?.last?.1 ?? []
+                        if let pos = arr.firstIndex(of: value.id) { arr.remove(at: pos) }
+                        idx.map[k, default: []].append((sequence, arr))
                     }
                 }
-                var arr = idx.map[key]?.last?.1 ?? []
-                if !arr.contains(value.id) { arr.append(value.id) }
-                idx.map[key, default: []].append((sequence, arr))
+                for k in newKeys {
+                    var arr = idx.map[k]?.last?.1 ?? []
+                    if !arr.contains(value.id) { arr.append(value.id) }
+                    idx.map[k, default: []].append((sequence, arr))
+                }
             case .fts(let idx):
                 let docID = "\(value.id)"
                 if old != nil { idx.index.remove(docID: docID) }
@@ -874,10 +888,12 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
                 let key = oldVal[keyPath: idx.keyPath]
                 idx.map[key, default: []].append((sequence, nil))
             case .multi(let idx):
-                let key = oldVal[keyPath: idx.keyPath]
-                var arr = idx.map[key]?.last?.1 ?? []
-                if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
-                idx.map[key, default: []].append((sequence, arr))
+                let keys = idx.keys(for: oldVal)
+                for key in keys {
+                    var arr = idx.map[key]?.last?.1 ?? []
+                    if let pos = arr.firstIndex(of: id) { arr.remove(at: pos) }
+                    idx.map[key, default: []].append((sequence, arr))
+                }
             case .fts(let idx):
                 let docID = "\(id)"
                 idx.index.remove(docID: docID)
@@ -919,14 +935,33 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
             indexes[index.name] = .unique(idx)
             try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "unique")
         case .multi(let path):
-            guard let kp = path as? KeyPath<C, String> else { return }
-            let idx = IndexStorage.Multi(keyPath: kp)
+            let idx: IndexStorage.Multi
+            if let kp = path as? KeyPath<C, String> {
+                idx = IndexStorage.Multi(stringKeyPath: kp)
+            } else if let akp = path as? KeyPath<C, [String]> {
+                idx = IndexStorage.Multi(arrayKeyPath: akp)
+            } else { return }
             for (id, versions) in data {
                 guard let (seq, val) = versions.last, let v = val else { continue }
-                let key = v[keyPath: kp]
-                var arr = idx.map[key]?.last?.1 ?? []
-                arr.append(id)
-                idx.map[key, default: []].append((seq, arr))
+                let keys = idx.keys(for: v)
+                for key in keys {
+                    var arr = idx.map[key]?.last?.1 ?? []
+                    arr.append(id)
+                    idx.map[key, default: []].append((seq, arr))
+                }
+            }
+            indexes[index.name] = .multi(idx)
+            try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "multi")
+        case .multiValues(let extractor):
+            let idx = IndexStorage.Multi(extractor: extractor)
+            for (id, versions) in data {
+                guard let (seq, val) = versions.last, let v = val else { continue }
+                let keys = idx.keys(for: v)
+                for key in keys {
+                    var arr = idx.map[key]?.last?.1 ?? []
+                    arr.append(id)
+                    idx.map[key, default: []].append((seq, arr))
+                }
             }
             indexes[index.name] = .multi(idx)
             try? await store.persistIndexDefinition(collection: name, name: index.name, kind: "multi")
