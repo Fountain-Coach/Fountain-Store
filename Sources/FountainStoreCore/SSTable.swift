@@ -30,6 +30,19 @@ public struct TableValue: Sendable, Hashable {
 public enum SSTableError: Error { case corrupt, notFound }
 
 public actor SSTable {
+    // CRC32 utility (polynomial 0xEDB88320)
+    private static let crc32Table: [UInt32] = {
+        (0...255).map { i -> UInt32 in
+            var c = UInt32(i)
+            for _ in 0..<8 { c = (c & 1) == 1 ? (0xEDB88320 ^ (c >> 1)) : (c >> 1) }
+            return c
+        }
+    }()
+    private static func crc32(_ data: Data) -> UInt32 {
+        var c: UInt32 = 0xFFFFFFFF
+        for b in data { let idx = Int((c ^ UInt32(b)) & 0xFF); c = crc32Table[idx] ^ (c >> 8) }
+        return c ^ 0xFFFFFFFF
+    }
     /// Create an immutable sorted table file at `url` containing the provided
     /// key/value `entries`. Entries **must** already be sorted by key.
     ///
@@ -68,9 +81,14 @@ public actor SSTable {
 
         func flushCurrentBlock() throws {
             guard !currentBlock.isEmpty, let first = currentFirstKey else { return }
-            try fh.write(contentsOf: currentBlock)
-            blockIndex.append((first, offset, UInt64(currentBlock.count)))
-            offset += UInt64(currentBlock.count)
+            // Append per-block CRC32 (little-endian)
+            let crc = Self.crc32(currentBlock)
+            var blockWithCRC = currentBlock
+            var crcLE = crc.littleEndian
+            blockWithCRC.append(Data(bytes: &crcLE, count: 4))
+            try fh.write(contentsOf: blockWithCRC)
+            blockIndex.append((first, offset, UInt64(blockWithCRC.count)))
+            offset += UInt64(blockWithCRC.count)
             currentBlock.removeAll(keepingCapacity: true)
             currentFirstKey = nil
         }
@@ -126,26 +144,8 @@ public actor SSTable {
 
         // Serialize bloom filter.
         let bloomOffset = offset
-        var bloomData = Data()
-        do {
-            // Extract internal representation via reflection.
-            let mirror = Mirror(reflecting: bloom)
-            var bits: [UInt64] = []
-            var kValue: Int = hashCount
-            for child in mirror.children {
-                if child.label == "bits" { bits = child.value as? [UInt64] ?? [] }
-                if child.label == "k" { kValue = child.value as? Int ?? hashCount }
-            }
-            var kLE = UInt64(kValue).littleEndian
-            var bitCntLE = UInt64(bitCount).littleEndian
-            bloomData.append(Data(bytes: &kLE, count: 8))
-            bloomData.append(Data(bytes: &bitCntLE, count: 8))
-            for b in bits {
-                var le = b.littleEndian
-                bloomData.append(Data(bytes: &le, count: 8))
-            }
-            try fh.write(contentsOf: bloomData)
-        }
+        let bloomData = bloom.serialize()
+        try fh.write(contentsOf: bloomData)
         let bloomSize = UInt64(bloomData.count)
         offset += bloomSize
 
@@ -164,32 +164,65 @@ public actor SSTable {
         return SSTableHandle(id: UUID(), path: url)
     }
 
-    /// Read all key/value pairs from an SSTable.
-    /// This performs a sequential scan of the table contents and ignores
-    /// bloom filters and block indexes. The caller is responsible for ensuring
-    /// the table fits in memory for this operation.
+    /// Read all key/value pairs from an SSTable by iterating the block index
+    /// and validating each block's CRC.
     public static func scan(_ handle: SSTableHandle) throws -> [(TableKey, TableValue)] {
-        let data = try Data(contentsOf: handle.path)
-        guard data.count >= 32 else { return [] }
-        let footerStart = data.count - 32
-        let indexOffset = Int(data[footerStart..<(footerStart + 8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian)
-        let blockData = data[..<indexOffset]
-        var offset = 0
+        let fh = try FileHandle(forReadingFrom: handle.path)
+        defer { try? fh.close() }
+        // Read footer
+        let fileSize = try fh.seekToEnd()
+        guard fileSize >= 32 else { return [] }
+        try fh.seek(toOffset: fileSize - 32)
+        guard let footer = try fh.read(upToCount: 32), footer.count == 32 else { throw SSTableError.corrupt }
+        let iOff = footer[0..<8].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+        let iSize = footer[8..<16].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+        // Load index
+        try fh.seek(toOffset: iOff)
+        guard let iData = try fh.read(upToCount: Int(iSize)), iData.count == iSize else { throw SSTableError.corrupt }
+        var cursor = iData.startIndex
+        guard iData.count - cursor >= 4 else { throw SSTableError.corrupt }
+        let blockCount = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+        cursor += 4
+        var blocks: [(Data, UInt64, UInt64)] = []
+        blocks.reserveCapacity(blockCount)
+        for _ in 0..<blockCount {
+            guard iData.count - cursor >= 4 else { throw SSTableError.corrupt }
+            let klen = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+            cursor += 4
+            guard iData.count - cursor >= klen + 16 else { throw SSTableError.corrupt }
+            let firstKey = iData[cursor..<(cursor+klen)]
+            cursor += klen
+            let blkOff = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+            cursor += 8
+            let blkSize = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+            cursor += 8
+            blocks.append((Data(firstKey), blkOff, blkSize))
+        }
         var res: [(TableKey, TableValue)] = []
-        while offset < blockData.count {
-            if offset + 4 > blockData.count { break }
-            let klen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
-            offset += 4
-            if offset + klen > blockData.count { break }
-            let key = Data(blockData[offset..<(offset + klen)])
-            offset += klen
-            if offset + 4 > blockData.count { break }
-            let vlen = Int(blockData[offset..<(offset + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
-            offset += 4
-            if offset + vlen > blockData.count { break }
-            let value = Data(blockData[offset..<(offset + vlen)])
-            offset += vlen
-            res.append((TableKey(raw: key), TableValue(raw: value)))
+        for (_, blkOff, blkSize) in blocks {
+            try fh.seek(toOffset: blkOff)
+            guard let blockData = try fh.read(upToCount: Int(blkSize)), blockData.count == blkSize else { throw SSTableError.corrupt }
+            guard blockData.count >= 4 else { throw SSTableError.corrupt }
+            let payload = blockData[..<(blockData.count - 4)]
+            let stored = blockData[(blockData.count - 4)..<blockData.count].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+            let crc = Self.crc32(Data(payload))
+            if crc != stored { throw SSTableError.corrupt }
+            var p = payload.startIndex
+            while p < payload.endIndex {
+                guard payload.count - p >= 4 else { break }
+                let klen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+                p += 4
+                guard payload.count - p >= klen else { break }
+                let kdata = payload[p..<(p+klen)]
+                p += klen
+                guard payload.count - p >= 4 else { break }
+                let vlen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
+                p += 4
+                guard payload.count - p >= vlen else { break }
+                let vdata = payload[p..<(p+vlen)]
+                p += vlen
+                res.append((TableKey(raw: Data(kdata)), TableValue(raw: Data(vdata))))
+            }
         }
         return res
     }
@@ -204,42 +237,17 @@ public actor SSTable {
         guard let footer = try fh.read(upToCount: 32), footer.count == 32 else {
             throw SSTableError.corrupt
         }
-        let iOff = footer[0..<8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
-        let iSize = footer[8..<16].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
-        let bOff = footer[16..<24].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
-        let bSize = footer[24..<32].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+        let iOff = footer[0..<8].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+        let iSize = footer[8..<16].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+        let bOff = footer[16..<24].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
+        let bSize = footer[24..<32].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
 
         // Load bloom filter and quickly reject missing keys.
         try fh.seek(toOffset: bOff)
-        guard let bData = try fh.read(upToCount: Int(bSize)), bData.count == bSize else {
-            throw SSTableError.corrupt
-        }
-        if bData.count >= 16 { // deserialize bloom filter
-            let k = Int(bData[0..<8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian)
-            let bitCnt = Int(bData[8..<16].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian)
-            let wordCnt = max(0, (bData.count - 16) / 8)
-            var bits: [UInt64] = []
-            bits.reserveCapacity(wordCnt)
-            for i in 0..<wordCnt {
-                let start = 16 + i*8
-                let val = bData[start..<start+8].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
-                bits.append(val)
-            }
-            _ = bitCnt // currently unused but reserved for integrity checks
-            let bitCount = bits.count * 64
-            func idx(_ d: Data, _ i: Int) -> Int {
-                var h: UInt64 = 1469598103934665603 &+ UInt64(i)
-                for b in d { h = (h ^ UInt64(b)) &* 1099511628211 }
-                return Int(h % UInt64(bitCount))
-            }
-            func test(_ data: Data) -> Bool {
-                func get(_ bit: Int) -> Bool {
-                    (bits[bit/64] & (1 << UInt64(bit%64))) != 0
-                }
-                for i in 0..<k { if !get(idx(data, i)) { return false } }
-                return true
-            }
-            if !test(key.raw) { return nil }
+        guard let bData = try fh.read(upToCount: Int(bSize)), bData.count == bSize else { throw SSTableError.corrupt }
+        if bData.count >= 16 {
+            let bloom = try BloomFilter.deserialize(bData)
+            if !bloom.mayContain(key.raw) { return nil }
         }
 
         // Read block index into memory.
@@ -249,20 +257,20 @@ public actor SSTable {
         }
         var cursor = iData.startIndex
         guard iData.count - cursor >= 4 else { throw SSTableError.corrupt }
-        let blockCount = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+        let blockCount = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
         cursor += 4
         var blocks: [(Data, UInt64, UInt64)] = []
         blocks.reserveCapacity(blockCount)
         for _ in 0..<blockCount {
             guard iData.count - cursor >= 4 else { throw SSTableError.corrupt }
-            let klen = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            let klen = Int(iData[cursor..<(cursor+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
             cursor += 4
             guard iData.count - cursor >= klen + 16 else { throw SSTableError.corrupt }
             let firstKey = iData[cursor..<(cursor+klen)]
             cursor += klen
-            let blkOff = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+            let blkOff = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
             cursor += 8
-            let blkSize = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.load(as: UInt64.self) }.littleEndian
+            let blkSize = iData[cursor..<(cursor+8)].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }.littleEndian
             cursor += 8
             blocks.append((Data(firstKey), blkOff, blkSize))
         }
@@ -291,22 +299,25 @@ public actor SSTable {
 
         // Read block and scan entries.
         try fh.seek(toOffset: blkOff)
-        guard let blockData = try fh.read(upToCount: Int(blkSize)), blockData.count == blkSize else {
-            throw SSTableError.corrupt
-        }
-        var p = blockData.startIndex
-        while p < blockData.endIndex {
+        guard let blockData = try fh.read(upToCount: Int(blkSize)), blockData.count == blkSize else { throw SSTableError.corrupt }
+        guard blockData.count >= 4 else { throw SSTableError.corrupt }
+        let payload = blockData[..<(blockData.count - 4)]
+        let stored = blockData[(blockData.count - 4)..<blockData.count].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+        let crc = Self.crc32(Data(payload))
+        if crc != stored { throw SSTableError.corrupt }
+        var p = payload.startIndex
+        while p < payload.endIndex {
             guard blockData.count - p >= 4 else { break }
-            let klen = Int(blockData[p..<(p+4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            let klen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
             p += 4
-            guard blockData.count - p >= klen else { break }
-            let kdata = blockData[p..<(p+klen)]
+            guard payload.count - p >= klen else { break }
+            let kdata = payload[p..<(p+klen)]
             p += klen
             guard blockData.count - p >= 4 else { break }
-            let vlen = Int(blockData[p..<(p+4)].withUnsafeBytes { $0.load(as: UInt32.self) }.littleEndian)
+            let vlen = Int(payload[p..<(p+4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian)
             p += 4
-            guard blockData.count - p >= vlen else { break }
-            let vdata = blockData[p..<(p+vlen)]
+            guard payload.count - p >= vlen else { break }
+            let vdata = payload[p..<(p+vlen)]
             p += vlen
             if Data(kdata) == target { return TableValue(raw: Data(vdata)) }
         }
