@@ -57,6 +57,15 @@ private struct WALPayload: Codable {
     let value: Data?
 }
 
+// Transactional WAL frames for atomic multi-op commits during recovery.
+// Backward compatible: old records without a `type` are treated as committed ops.
+private struct WALFrame: Codable {
+    let type: String // "begin" | "op" | "commit"
+    let txid: String?
+    let key: Data?
+    let value: Data??
+}
+
 /// Structured log events emitted by the store.
 public enum LogEvent: Sendable, Hashable, Codable {
     case put(collection: String)
@@ -184,8 +193,8 @@ public actor FountainStore {
 
         // Replay WAL records newer than the manifest sequence.
         let recs = try await wal.replay()
-        for r in recs where r.sequence > m.sequence {
-            try await store.replayRecord(r)
+        for r in recs {
+            try await store.replayRecord(r, manifestSequence: m.sequence)
         }
         return store
     }
@@ -213,6 +222,9 @@ public actor FountainStore {
     private var bootstrap: [String: [(Data, Data?, UInt64)]] = [:]
     private var sequence: UInt64 = 0
     private var metrics = Metrics()
+    // Replay-time transaction buffers (BEGIN/OP/COMMIT); cleared after open.
+    private var replayActiveTx: Set<String> = []
+    private var replayPendingOps: [String: [(UInt64, Data, Data?)]] = [:]
 
     fileprivate func nextSequence() -> UInt64 {
         allocateSequences(1)
@@ -296,11 +308,52 @@ public actor FountainStore {
         }
     }
 
-    internal func replayRecord(_ r: WALRecord) async throws {
+    internal func replayRecord(_ r: WALRecord, manifestSequence: UInt64) async throws {
+        // Try transactional frame first; fallback to legacy payload.
+        if let frame = try? JSONDecoder().decode(WALFrame.self, from: r.payload) {
+            switch frame.type {
+            case "begin":
+                if let tx = frame.txid { replayActiveTx.insert(tx); replayPendingOps[tx] = [] }
+                return
+            case "op":
+                guard let key = frame.key else { return }
+                let value: Data?
+                if let vv = frame.value { value = vv } else { value = nil }
+                if r.sequence <= manifestSequence {
+                    return // already materialized
+                }
+                if let tx = frame.txid, replayActiveTx.contains(tx) {
+                    replayPendingOps[tx, default: []].append((r.sequence, key, value))
+                    return
+                }
+                // No active tx: treat as committed op.
+                await memtable.put(MemtableEntry(key: key, value: value, sequence: r.sequence))
+                if let (col, idData) = splitKey(key) {
+                    addBootstrap(collection: col, id: idData, value: value, sequence: r.sequence)
+                }
+                return
+            case "commit":
+                if let tx = frame.txid, let ops = replayPendingOps.removeValue(forKey: tx) {
+                    replayActiveTx.remove(tx)
+                    for (seq, key, value) in ops.sorted(by: { $0.0 < $1.0 }) {
+                        await memtable.put(MemtableEntry(key: key, value: value, sequence: seq))
+                        if let (col, idData) = splitKey(key) {
+                            addBootstrap(collection: col, id: idData, value: value, sequence: seq)
+                        }
+                    }
+                }
+                return
+            default:
+                break
+            }
+        }
+        // Legacy single-op payload: apply immediately (committed).
         let payload = try JSONDecoder().decode(WALPayload.self, from: r.payload)
-        await memtable.put(MemtableEntry(key: payload.key, value: payload.value, sequence: r.sequence))
-        if let (col, idData) = splitKey(payload.key) {
-            addBootstrap(collection: col, id: idData, value: payload.value, sequence: r.sequence)
+        if r.sequence > manifestSequence {
+            await memtable.put(MemtableEntry(key: payload.key, value: payload.value, sequence: r.sequence))
+            if let (col, idData) = splitKey(payload.key) {
+                addBootstrap(collection: col, id: idData, value: payload.value, sequence: r.sequence)
+            }
         }
     }
 
