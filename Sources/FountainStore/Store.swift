@@ -129,11 +129,21 @@ public struct StoreOptions: Sendable {
     public let cacheBytes: Int
     public let logger: (@Sendable (LogEvent) -> Void)?
     public let defaultScanLimit: Int
+    public let walSegmentBytes: Int
+    public init(path: URL, cacheBytes: Int = 64 << 20, logger: (@Sendable (LogEvent) -> Void)? = nil, defaultScanLimit: Int = 100, walSegmentBytes: Int = 4 << 20) {
+        self.path = path
+        self.cacheBytes = cacheBytes
+        self.logger = logger
+        self.defaultScanLimit = defaultScanLimit
+        self.walSegmentBytes = walSegmentBytes
+    }
+    // Backward-compatible initializer without walSegmentBytes parameter.
     public init(path: URL, cacheBytes: Int = 64 << 20, logger: (@Sendable (LogEvent) -> Void)? = nil, defaultScanLimit: Int = 100) {
         self.path = path
         self.cacheBytes = cacheBytes
         self.logger = logger
         self.defaultScanLimit = defaultScanLimit
+        self.walSegmentBytes = 4 << 20
     }
 }
 
@@ -283,7 +293,7 @@ public actor FountainStore {
     public static func open(_ opts: StoreOptions) async throws -> FountainStore {
         let fm = FileManager.default
         try fm.createDirectory(at: opts.path, withIntermediateDirectories: true)
-        let wal = WAL(path: opts.path.appendingPathComponent("wal.log"))
+        let wal = WAL(path: opts.path.appendingPathComponent("wal.log"), rotateBytes: opts.walSegmentBytes)
         let manifest = ManifestStore(url: opts.path.appendingPathComponent("MANIFEST.json"))
         let memtable = Memtable(limit: 1024)
         let compactor = Compactor(directory: opts.path, manifest: manifest)
@@ -510,6 +520,8 @@ public actor FountainStore {
         m.sequence = sequence
         m.tables[handle.id] = handle.path
         try await manifest.save(m)
+        // GC old WAL segments that are safely beyond the manifest sequence.
+        await wal.gc(manifestSequence: m.sequence)
         // CRASH_POINT(id: manifest_save)
         try CrashPoints.hit("manifest_save")
         await memtable.fireFlushCallbacks(drained)
