@@ -356,6 +356,24 @@ public actor AdminService {
             case .put(let collection, let record):
                 do {
                     let coll = await store.collection(collection, of: HTTPDoc.self)
+                    // Dynamic unique enforcement (best-effort)
+                    let defs = (try? await store.listIndexDefinitions(collection)) ?? []
+                    var violated: Problem? = nil
+                    for d in defs where d.kind == "unique" {
+                        let keys = AdminService.extractStrings(from: record, by: d.field ?? d.name)
+                        for key in keys {
+                            let existing = try await coll.byIndex(d.name, equals: key)
+                            if let other = existing.first, other.id != record.id {
+                                violated = Problem(title: "unique constraint", status: 409, detail: "\(d.name) key=\(key)")
+                                break
+                            }
+                        }
+                        if violated != nil { break }
+                    }
+                    if let v = violated {
+                        results.append(.init(opIndex: i, status: "error", record: nil, error: v))
+                        continue
+                    }
                     let op = try coll.makeStoreOpPut(record)
                     storeOps.append(op)
                     let out = HTTPDocOut(id: record.id, data: record.data, version: record.version, sequence: nil, deleted: false)

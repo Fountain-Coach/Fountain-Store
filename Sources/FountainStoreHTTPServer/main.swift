@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import NIO
 @preconcurrency import NIOHTTP1
 import FountainStoreHTTP
+import SecretStore
 import FountainStore
 
 final class HTTPHandler: ChannelInboundHandler {
@@ -391,9 +392,28 @@ struct ServerMain {
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 16)
             .childChannelOption(ChannelOptions.recvAllocator, value: AdaptiveRecvByteBufferAllocator())
 
+        // Resolve API key via SecretStore if available, else env.
+        var apiKeySource: String? = ProcessInfo.processInfo.environment["FS_API_KEY"]
+        if apiKeySource == nil {
+            #if canImport(Security)
+            let store = KeychainStore(service: "com.fountain.store.http")
+            if let data = try? store.retrieveSecret(for: "FS_API_KEY"), let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                apiKeySource = s
+            }
+            #else
+            if let pathStr = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PATH"],
+               let password = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PASSWORD"] {
+                if let url = URL(string: pathStr), let keystore = try? FileKeystore(storeURL: url, password: password, iterations: 100_000),
+                   let data = try? keystore.retrieveSecret(for: "FS_API_KEY"), let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                    apiKeySource = s
+                }
+            }
+            #endif
+        }
+
         let port = Int(ProcessInfo.processInfo.environment["PORT"] ?? "8080") ?? 8080
         let channel = try await bootstrap.bind(host: "0.0.0.0", port: port).get()
-        print("FountainStoreHTTPServer listening on \(channel.localAddress!) path=\(path.path)")
+        print("FountainStoreHTTPServer listening on \(channel.localAddress!) path=\(path.path) auth=\(apiKeySource != nil ? "on" : "off")")
         try await channel.closeFuture.get()
         // Shutdown on a background thread to avoid blocking async context.
         DispatchQueue.global().async { try? group.syncShutdownGracefully() }

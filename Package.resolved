@@ -1,6 +1,15 @@
 {
-  "originHash" : "8db85139b479e0980719b902fd4c5a2a8d8780146814f1dec3d0cef9e994766e",
+  "originHash" : "7e2b9021b577cdb47d02ef0bfcb8b3aa43b6074279181177584fb5128311ea48",
   "pins" : [
+    {
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1.git",
+      "state" : {
+        "revision" : "f70225981241859eb4aa1a18a75531d26637c8cc",
+        "version" : "1.4.0"
+      }
+    },
     {
       "identity" : "swift-atomics",
       "kind" : "remoteSourceControl",
@@ -20,12 +29,30 @@
       }
     },
     {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto.git",
+      "state" : {
+        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+        "version" : "3.15.1"
+      }
+    },
+    {
       "identity" : "swift-nio",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
         "revision" : "a18bddb0acf7a40d982b2f128ce73ce4ee31f352",
         "version" : "2.86.2"
+      }
+    },
+    {
+      "identity" : "swift-secretstore",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Fountain-Coach/swift-secretstore.git",
+      "state" : {
+        "revision" : "724b285759206fc87cd56066d265e70215d83d28",
+        "version" : "0.1.0"
       }
     },
     {
