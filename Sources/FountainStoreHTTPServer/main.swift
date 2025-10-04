@@ -3,6 +3,7 @@ import Foundation
 @preconcurrency import NIOHTTP1
 import FountainStoreHTTP
 import SecretStore
+import Crypto
 import FountainStore
 
 final class HTTPHandler: ChannelInboundHandler {
@@ -73,6 +74,33 @@ final class HTTPHandler: ChannelInboundHandler {
         let dec = JSONDecoder()
         let enc = JSONEncoder()
         enc.outputFormatting = []
+        // Opaque pagination tokens (URL-safe base64 of JSON with HMAC-SHA256 signature)
+        func signKey() -> Data? { apiKey?.data(using: .utf8) }
+        struct Token: Codable { let c: String; let v: String; let s: String }
+        func makeToken(cursor: String) -> String? {
+            guard let key = signKey() else { return cursor } // fallback to plain cursor
+            let msg = Data(cursor.utf8)
+            let mac = HMAC<SHA256>.authenticationCode(for: msg, using: SymmetricKey(data: key))
+            let sig = Data(mac).map { String(format: "%02x", $0) }.joined()
+            let t = Token(c: "v1", v: cursor, s: sig)
+            guard let data = try? JSONEncoder().encode(t) else { return nil }
+            return data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        }
+        func parseToken(_ token: String?) -> String? {
+            guard let token = token else { return nil }
+            // If it looks like plain, return as-is
+            if token.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) == nil { return token }
+            var b64 = token.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            // pad
+            while b64.count % 4 != 0 { b64.append("=") }
+            guard let data = Data(base64Encoded: b64), let t = try? JSONDecoder().decode(Token.self, from: data) else { return token }
+            if let key = signKey() {
+                let mac = HMAC<SHA256>.authenticationCode(for: Data(t.v.utf8), using: SymmetricKey(data: key))
+                let sig = Data(mac).map { String(format: "%02x", $0) }.joined()
+                if sig != t.s { return nil }
+            }
+            return t.v
+        }
         func components(_ path: String) -> [String] {
             var urlPath = path
             if let q = urlPath.firstIndex(of: "?") { urlPath = String(urlPath[..<q]) }
@@ -106,6 +134,18 @@ final class HTTPHandler: ChannelInboundHandler {
         // Metrics
         if parts == ["metrics"], method == .GET {
             let m = await admin.metrics()
+            if (queryItem("format") == "prometheus") {
+                var lines: [String] = []
+                lines.append("fountain_puts_total \(m.puts)")
+                lines.append("fountain_deletes_total \(m.deletes)")
+                lines.append("fountain_gets_total \(m.gets)")
+                lines.append("fountain_scans_total \(m.scans)")
+                lines.append("fountain_index_lookups_total \(m.indexLookups)")
+                lines.append("fountain_batches_total \(m.batches)")
+                lines.append("fountain_histories_total \(m.histories)")
+                let body = lines.joined(separator: "\n") + "\n"
+                return Response(status: .ok, headers: [("content-type","text/plain; version=0.0.4")], body: Data(body.utf8))
+            }
             return json(m)
         }
         // Collections list/create
@@ -115,12 +155,13 @@ final class HTTPHandler: ChannelInboundHandler {
             let st = await admin.status()
             var items = st.collections.map { RespItem(name: $0.name, recordsApprox: $0.recordsApprox) }.sorted { $0.name < $1.name }
             let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
-            let token = queryItem("pageToken")
+            let token = parseToken(queryItem("pageToken"))
             if let t = token { items = Array(items.drop(while: { $0.name <= t })) }
             let limit = pageSize > 0 ? pageSize : items.count
             let page = Array(items.prefix(limit))
             let next = (limit < items.count) ? page.last?.name : nil
-            return json(Resp(items: page, nextPageToken: next))
+            let nextTok = next.flatMap { makeToken(cursor: $0) }
+            return json(Resp(items: page, nextPageToken: nextTok))
         }
         if parts == ["collections"], method == .POST {
             struct CreateReq: Codable { let name: String; let version: String? }
@@ -168,12 +209,13 @@ final class HTTPHandler: ChannelInboundHandler {
             var idx = await admin.listIndexDefinitions(c)
             idx.sort { $0.name < $1.name }
             let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
-            let token = queryItem("pageToken")
+            let token = parseToken(queryItem("pageToken"))
             if let t = token { idx = Array(idx.drop(while: { $0.name <= t })) }
             let limit = pageSize > 0 ? pageSize : idx.count
             let page = Array(idx.prefix(limit))
             let next = (limit < idx.count) ? page.last?.name : nil
-            return json(Resp(items: page, nextPageToken: next))
+            let nextTok = next.flatMap { makeToken(cursor: $0) }
+            return json(Resp(items: page, nextPageToken: nextTok))
         }
         if parts.count == 3, parts[0] == "collections", parts[2] == "indexes", method == .POST {
             let c = parts[1]
@@ -295,13 +337,14 @@ final class HTTPHandler: ChannelInboundHandler {
                 return a.id > b.id
             }
             let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
-            let token = queryItem("pageToken")
+            let token = parseToken(queryItem("pageToken"))
             if let t = token, let pos = refs.firstIndex(where: { $0.id == t }) { refs = Array(refs.dropFirst(pos+1)) }
             let limit = pageSize > 0 ? pageSize : refs.count
             let page = Array(refs.prefix(limit))
             let next = (limit < refs.count) ? page.last?.id : nil
+            let nextTok = next.flatMap { makeToken(cursor: $0) }
             struct Resp: Codable { let items: [FountainStore.BackupRef]; let nextPageToken: String? }
-            return json(Resp(items: page, nextPageToken: next))
+            return json(Resp(items: page, nextPageToken: nextTok))
         }
         if parts == ["backups"], method == .POST {
             struct Req: Codable { let note: String? }
@@ -401,6 +444,20 @@ struct ServerMain {
                 apiKeySource = s
             }
             #else
+            #if os(Linux)
+            if ProcessInfo.processInfo.environment["FS_USE_SECRET_SERVICE"] == "1" {
+                let svc = SecretServiceStore(service: "com.fountain.store.http")
+                if let data = try? svc.retrieveSecret(for: "FS_API_KEY"), let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                    apiKeySource = s
+                }
+            } else if let pathStr = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PATH"],
+                      let password = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PASSWORD"] {
+                if let url = URL(string: pathStr), let keystore = try? FileKeystore(storeURL: url, password: password, iterations: 100_000),
+                   let data = try? keystore.retrieveSecret(for: "FS_API_KEY"), let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                    apiKeySource = s
+                }
+            }
+            #else
             if let pathStr = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PATH"],
                let password = ProcessInfo.processInfo.environment["FS_SECRETSTORE_PASSWORD"] {
                 if let url = URL(string: pathStr), let keystore = try? FileKeystore(storeURL: url, password: password, iterations: 100_000),
@@ -408,6 +465,7 @@ struct ServerMain {
                     apiKeySource = s
                 }
             }
+            #endif
             #endif
         }
 

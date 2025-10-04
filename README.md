@@ -80,14 +80,14 @@ curl -s -X PUT \
 Pagination patterns (collections, indexes, backups)
 
 ```
-# Page collections (pageSize + pageToken). nextPageToken is returned.
+# Page collections (pageSize + pageToken). nextPageToken is returned and opaque.
 curl -s 'http://127.0.0.1:8080/collections?pageSize=2' | jq
 {
   "items": [ {"name": "a", "recordsApprox": 0}, {"name": "b", "recordsApprox": 0} ],
   "nextPageToken": "b"
 }
 
-curl -s 'http://127.0.0.1:8080/collections?pageSize=2&pageToken=b' | jq
+curl -s "http://127.0.0.1:8080/collections?pageSize=2&pageToken=$(jq -r .nextPageToken <<<"$prev")" | jq
 {
   "items": [ {"name": "c", "recordsApprox": 0}, {"name": "d", "recordsApprox": 0} ],
   "nextPageToken": "d"
@@ -100,7 +100,7 @@ curl -s 'http://127.0.0.1:8080/collections/docs/indexes?pageSize=1' | jq
   "nextPageToken": "byTag"
 }
 
-# Page backups (newest first); nextPageToken is the last id in the page
+# Page backups (newest first); nextPageToken is opaque
 curl -s 'http://127.0.0.1:8080/backups?pageSize=2' | jq
 {
   "items": [ {"id": "bk_3", "createdAt": "2025-10-04T07:00:00Z"}, {"id": "bk_2", "createdAt": "2025-10-04T06:00:00Z"} ],
@@ -124,6 +124,23 @@ curl -s -X POST \
   "nextPageToken": "a2"
 }
 ```
+
+#### Metrics formats
+
+- JSON (default): `GET /metrics`
+- Prometheus text: `GET /metrics?format=prometheus`
+
+#### API key management via SecretStore
+
+The server can be protected via an API key (checked via `x-api-key` or `Authorization: Bearer …`).
+The key can be provided via:
+
+- Env var `FS_API_KEY`
+- Apple platforms: Keychain (service `com.fountain.store.http`, key `FS_API_KEY`)
+- Linux (desktop): Secret Service (set `FS_USE_SECRET_SERVICE=1`), entry `FS_API_KEY`
+- Linux (headless): FileKeystore with `FS_SECRETSTORE_PATH` and `FS_SECRETSTORE_PASSWORD`
+
+When no key is configured, the server runs without auth for local development.
 
 ### Backup/Restore
 
