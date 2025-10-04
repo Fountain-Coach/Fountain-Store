@@ -3,6 +3,7 @@
 Current
 - OpenAPI Spec (source of truth): openapi-fountainstore.yaml
 - Project Status (single development-tracking doc): PROJECT_STATUS.md
+ - Narrative Overview: LECTURE.md
 
 Legacy (historical)
 - LEGACY/DELIVERY_PLAN.md
