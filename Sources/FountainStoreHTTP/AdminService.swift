@@ -192,16 +192,40 @@ public actor AdminService {
         case .byId(let id):
             if let v = try await coll.get(id: id, snapshot: snap) { return QueryResponse(items: [v], nextPageToken: nil) }
             return QueryResponse(items: [], nextPageToken: nil)
-        case .indexEquals(let index, let key, let pageSize, _):
-            let items = try await coll.byIndex(index, equals: key, snapshot: snap)
-            let limit = pageSize ?? 100
-            return QueryResponse(items: Array(items.prefix(limit)), nextPageToken: nil)
+        case .indexEquals(let index, let key, let pageSize, let pageToken):
+            var items = try await coll.byIndex(index, equals: key, snapshot: snap)
+            // Ensure a stable order by id to paginate deterministically
+            items.sort { $0.id < $1.id }
+            let limit = max(1, (pageSize ?? 100))
+            let startIndex: Int
+            if let token = pageToken, let idx = items.firstIndex(where: { $0.id > token }) {
+                startIndex = idx
+            } else {
+                startIndex = 0
+            }
+            let endIndex = min(startIndex + limit, items.count)
+            let pageItems = (startIndex < endIndex) ? Array(items[startIndex..<endIndex]) : []
+            let hasMore = endIndex < items.count
+            let next = hasMore ? pageItems.last?.id : nil
+            return QueryResponse(items: pageItems, nextPageToken: next)
         case .scan(let prefix, let startAfter, let limit):
             var prefData: Data? = nil
             if let p = prefix { prefData = try? JSONEncoder().encode(p) }
-            var items = try await coll.scan(prefix: prefData, limit: limit, snapshot: snap)
-            if let sa = startAfter { items = items.filter { $0.id > sa } }
-            return QueryResponse(items: items, nextPageToken: nil)
+            // Fetch full set under prefix, then apply startAfter + limit. Acceptable for modest datasets.
+            var items = try await coll.scan(prefix: prefData, limit: nil, snapshot: snap)
+            items.sort { $0.id < $1.id }
+            let startIdx: Int
+            if let sa = startAfter, let idx = items.firstIndex(where: { $0.id > sa }) {
+                startIdx = idx
+            } else {
+                startIdx = 0
+            }
+            let pageLimit = max(1, (limit ?? 100))
+            let endIdx = min(startIdx + pageLimit, items.count)
+            let pageItems = (startIdx < endIdx) ? Array(items[startIdx..<endIdx]) : []
+            let hasMore = endIdx < items.count
+            let next = hasMore ? pageItems.last?.id : nil
+            return QueryResponse(items: pageItems, nextPageToken: next)
         }
     }
 

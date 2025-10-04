@@ -173,9 +173,17 @@ final class HTTPHandler: ChannelInboundHandler {
                     return problem(.init(title: "invalid body", status: 400, detail: nil, instance: nil))
                 }
                 do {
-                    let v = try await admin.putRecord(collection: c, id: req.id ?? id, data: req.data)
-                    // Use 200 for update, 201 for new is indistinguishable cheaply; return 200
-                    return json(v)
+                    let rid = req.id ?? id
+                    let existed = try await admin.getRecord(collection: c, id: rid, snapshotId: nil) != nil
+                    let v = try await admin.putRecord(collection: c, id: rid, data: req.data)
+                    if existed {
+                        return json(v, status: .ok)
+                    } else {
+                        // Encode body manually to attach Location header
+                        let data = (try? JSONEncoder().encode(v)) ?? Data("{}".utf8)
+                        let loc = "/collections/\(c)/records/\(rid)"
+                        return Response(status: .created, headers: [("content-type", "application/json"), ("Location", loc)], body: data)
+                    }
                 } catch let e as CollectionError {
                     switch e {
                     case .uniqueConstraintViolation(let index, let key):
