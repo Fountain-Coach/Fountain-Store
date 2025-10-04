@@ -651,4 +651,85 @@ final class HTTPServerTests: XCTestCase {
         let (rb, _) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/backups/\(ids[0])/restore")!)
         XCTAssertEqual(rb, 202)
     }
+
+    func test_prometheus_metrics_output() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 32080..<(32080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // Wait ready
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Touch a few endpoints to increment counters
+        let name = "metrics"
+        _ = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+        _ = try await request("PUT", URL(string: "http://127.0.0.1:\(port)/collections/\(name)/records/1")!, json: ["data": ["x": 1]])
+        _ = try await request("GET", URL(string: "http://127.0.0.1:\(port)/collections/\(name)/records/1")!)
+
+        // Request Prometheus metrics
+        let (s, d) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/metrics?format=prometheus")!)
+        XCTAssertEqual(s, 200)
+        let text = String(data: d, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("fountain_puts_total"))
+        XCTAssertTrue(text.contains("fountain_gets_total"))
+        XCTAssertTrue(text.contains("fountain_deletes_total"))
+    }
+
+    func test_list_tokens_are_opaque_with_api_key() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 33080..<(33080+1000))
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ".build/debug/FountainStoreHTTPServer")
+        p.environment = [
+            "PORT": String(port),
+            "FS_PATH": dir.path,
+            "FS_API_KEY": "secret"
+        ]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+        try p.run()
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Create 3 collections with auth
+        for n in ["a","b","c"] {
+            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections")!)
+            req.httpMethod = "POST"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.addValue("secret", forHTTPHeaderField: "x-api-key")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["name": n])
+            _ = try await URLSession.shared.data(for: req)
+        }
+
+        // Page collections with auth
+        var listReq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections?pageSize=2")!)
+        listReq.httpMethod = "GET"
+        listReq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        var (d1, r1) = try await URLSession.shared.data(for: listReq)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        var next: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            next = obj["nextPageToken"] as? String
+            XCTAssertNotNil(next)
+            XCTAssertNotEqual(next, items.last?["name"] as? String)
+        } else { XCTFail("invalid json") }
+
+        // Next page
+        listReq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections?pageSize=2&pageToken=\(next!)")!)
+        listReq.httpMethod = "GET"
+        listReq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        (d1, r1) = try await URLSession.shared.data(for: listReq)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 1)
+        } else { XCTFail("invalid json") }
+    }
 }
