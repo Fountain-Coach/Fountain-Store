@@ -87,6 +87,21 @@ paths:
                     items:
                       $ref: '#/components/schemas/CollectionRef'
                   nextPageToken: { type: string, nullable: true }
+              examples:
+                page1:
+                  summary: First page
+                  value:
+                    items:
+                      - { name: "a", recordsApprox: 0 }
+                      - { name: "b", recordsApprox: 0 }
+                    nextPageToken: "b"
+                page2:
+                  summary: Second page
+                  value:
+                    items:
+                      - { name: "c", recordsApprox: 0 }
+                      - { name: "d", recordsApprox: 0 }
+                    nextPageToken: "d"
     post:
       tags: [Collections]
       summary: Create a collection
@@ -163,6 +178,11 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/IndexDefinition' }
                   nextPageToken: { type: string, nullable: true }
+              example:
+                items:
+                  - { name: "byTag", kind: "multi", keyPath: ".tag" }
+                  - { name: "title", kind: "unique", keyPath: ".title" }
+                nextPageToken: "title"
     post:
       tags: [Indexes]
       summary: Define an index on a collection
@@ -196,8 +216,32 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/Record' }
       responses:
-        '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } } }
-        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } } }
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+              example:
+                id: a1
+                data: { title: Updated }
+                version: null
+                sequence: 43
+                deleted: false
+        '201':
+          description: Created
+          headers:
+            Location:
+              description: Resource URL of the created record
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+              example:
+                id: a1
+                data: { title: First }
+                version: null
+                sequence: 42
+                deleted: false
         '409': { description: Unique index conflict, content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } } }
     get:
       tags: [Records]
@@ -206,6 +250,15 @@ paths:
         '200':
           description: Record
           content: { application/json: { schema: { $ref: '#/components/schemas/Record' } } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+              example:
+                id: a1
+                data: { title: First }
+                version: null
+                sequence: 42
+                deleted: false
         '404':
           description: Not found
           content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
@@ -235,6 +288,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/QueryResponse' }
+              example:
+                items:
+                  - { id: a1, data: { tag: x }, sequence: 101, deleted: false }
+                  - { id: a2, data: { tag: x }, sequence: 102, deleted: false }
+                nextPageToken: a2
   /transactions:
     post:
       tags: [Transactions]
@@ -328,6 +386,11 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/BackupRef' }
                   nextPageToken: { type: string, nullable: true }
+              example:
+                items:
+                  - { id: bk_3, createdAt: '2025-10-04T07:00:00Z', sizeBytes: 1024 }
+                  - { id: bk_2, createdAt: '2025-10-04T06:00:00Z', sizeBytes: 1024 }
+                nextPageToken: bk_2
     post:
       tags: [Backups]
       summary: Create a backup

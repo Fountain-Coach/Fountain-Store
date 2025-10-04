@@ -39,6 +39,92 @@ Endpoints (minimal subset):
 
 Note: the server is a minimal wiring and can be extended to cover the full OpenAPI in `docs/openapi-fountainstore.yaml`.
 
+#### HTTP Examples
+
+Record upsert with enriched response metadata
+
+```
+# First write → 201 Created with Location and metadata
+curl -i -X PUT \
+  -H 'content-type: application/json' \
+  -d '{"data": {"title": "First"}}' \
+  http://127.0.0.1:8080/collections/docs/records/a1
+
+HTTP/1.1 201 Created
+Location: /collections/docs/records/a1
+content-type: application/json
+
+{
+  "id": "a1",
+  "data": { "title": "First" },
+  "version": null,
+  "sequence": 42,
+  "deleted": false
+}
+
+# Update same record → 200 OK, metadata included
+curl -s -X PUT \
+  -H 'content-type: application/json' \
+  -d '{"data": {"title": "Updated"}}' \
+  http://127.0.0.1:8080/collections/docs/records/a1 | jq
+
+{
+  "id": "a1",
+  "data": { "title": "Updated" },
+  "version": null,
+  "sequence": 43,
+  "deleted": false
+}
+```
+
+Pagination patterns (collections, indexes, backups)
+
+```
+# Page collections (pageSize + pageToken). nextPageToken is returned.
+curl -s 'http://127.0.0.1:8080/collections?pageSize=2' | jq
+{
+  "items": [ {"name": "a", "recordsApprox": 0}, {"name": "b", "recordsApprox": 0} ],
+  "nextPageToken": "b"
+}
+
+curl -s 'http://127.0.0.1:8080/collections?pageSize=2&pageToken=b' | jq
+{
+  "items": [ {"name": "c", "recordsApprox": 0}, {"name": "d", "recordsApprox": 0} ],
+  "nextPageToken": "d"
+}
+
+# Page indexes for a collection
+curl -s 'http://127.0.0.1:8080/collections/docs/indexes?pageSize=1' | jq
+{
+  "items": [ {"name": "byTag", "kind": "multi", "keyPath": ".tag"} ],
+  "nextPageToken": "byTag"
+}
+
+# Page backups (newest first); nextPageToken is the last id in the page
+curl -s 'http://127.0.0.1:8080/backups?pageSize=2' | jq
+{
+  "items": [ {"id": "bk_3", "createdAt": "2025-10-04T07:00:00Z"}, {"id": "bk_2", "createdAt": "2025-10-04T06:00:00Z"} ],
+  "nextPageToken": "bk_2"
+}
+```
+
+Query responses include pagination and metadata
+
+```
+curl -s -X POST \
+  -H 'content-type: application/json' \
+  -d '{"type": "indexEquals", "index": "byTag", "key": "x", "pageSize": 2}' \
+  http://127.0.0.1:8080/collections/docs/query | jq
+
+{
+  "items": [
+    {"id": "a1", "data": {"tag": "x"}, "sequence": 101, "deleted": false},
+    {"id": "a2", "data": {"tag": "x"}, "sequence": 102, "deleted": false}
+  ],
+  "nextPageToken": "a2"
+}
+```
+
 ### Backup/Restore
 
 ```
