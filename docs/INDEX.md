@@ -1,15 +1,16 @@
 # FountainStore Documentation Index
 
-- Vision: VISION.md
-- Architecture: ARCHITECTURE.md
-- OpenAPI Spec: openapi-fountainstore.yaml
-- HTTP Examples: See README.md (Optional HTTP Server) and the OpenAPI examples
-- Audit (status & roadmap guidance): AUDIT_2025-10-04.md
-- Roadmap (current): ROADMAP.md
-- Test Plan: TESTPLAN.md
-- Migration Notes: MIGRATION.md
-- Changelog: CHANGELOG.md
+Current
+- OpenAPI Spec (source of truth): openapi-fountainstore.yaml
+- Project Status (single development-tracking doc): PROJECT_STATUS.md
 
-Legacy (historical or superseded)
-- Legacy Delivery Plan: LEGACY/DELIVERY_PLAN.md
-- Root audit note: "Implementation audit for Fountain‐Store.md" points to the dated audit
+Legacy (historical)
+- LEGACY/DELIVERY_PLAN.md
+- LEGACY/VISION.md
+- LEGACY/ARCHITECTURE.md
+- LEGACY/ROADMAP.md
+- LEGACY/TESTPLAN.md
+- LEGACY/MIGRATION.md
+- LEGACY/CHANGELOG.md
+- LEGACY/AUDIT_2025-10-04.md
+- Root audit note: "Implementation audit for Fountain‐Store.md" (points to dated audit)

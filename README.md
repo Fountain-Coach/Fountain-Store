@@ -1,7 +1,7 @@
 
 # FountainStore
 
-**Status:** Initial release v0.1.0 – includes optional FTS and vector modules with disk persistence, crash recovery, and SSTable read path.
+**Status:** 0.2.0‑beta — stable engine, enriched HTTP surface (see What’s New) and unified docs.
 
 FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI. The engine persists data to disk via a WAL and SSTables and reloads state on startup. It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,
 secondary indexes, and optional FTS and Vector modules, all with zero non‑Swift dependencies.
@@ -10,7 +10,18 @@ See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
 Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
 
-## What’s New (vNext milestones)
+## What’s New (0.2.0‑beta)
+
+- Enriched record responses (sequence/deleted); PUT returns 201/200 with Location
+- Opaque pagination tokens (HMAC‑signed when API key configured) for lists/queries
+- Prometheus metrics output via `GET /metrics?format=prometheus`
+- Optional API key protection using SecretStore (Keychain/Secret Service/FileKeystore) or env
+- Dynamic unique enforcement for HTTP‑defined indexes; dynamic index rebuild on startup
+- Compaction preference for L0 groups with limited merges per tick; improved write backpressure
+
+For the full development status and next steps see `docs/PROJECT_STATUS.md`.
+
+## Highlights (vNext milestones)
 
 - Persistent MVCC across restarts (sequence stored in SSTables)
 - Transactional WAL replay (BEGIN/OP/COMMIT) and store-level multi-collection batch
@@ -37,8 +48,7 @@ Endpoints (minimal subset):
 - `GET /status` – store status
 - `GET /metrics` – metrics snapshot
 
-Docs index: See `docs/INDEX.md` for the full documentation map (Vision, Architecture, OpenAPI, Audit, Roadmap, Test Plan, Migration, Changelog).
-The HTTP surface is aligned with `docs/openapi-fountainstore.yaml` and covered by E2E tests.
+Docs: OpenAPI is the source of truth (`docs/openapi-fountainstore.yaml`). The single development‑tracking doc is `docs/PROJECT_STATUS.md`. See `docs/INDEX.md` for the map.
 
 #### HTTP Examples
 
