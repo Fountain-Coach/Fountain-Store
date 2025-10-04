@@ -108,6 +108,15 @@ final class HTTPHandler: ChannelInboundHandler {
             guard let data = rawBody.data(using: .utf8), let req = try? dec.decode(CreateReq.self, from: data), !req.name.isEmpty else {
                 return problem(.init(title: "invalid body", status: 400, detail: nil, instance: nil))
             }
+            // Validate name against OpenAPI pattern
+            let pattern = "^[A-Za-z0-9._-]{1,128}$"
+            if req.name.range(of: pattern, options: .regularExpression) == nil {
+                return problem(.init(title: "invalid collection name", status: 400, detail: "must match ^[A-Za-z0-9._-]{1,128}$", instance: nil))
+            }
+            let existing = await admin.listCollections()
+            if existing.contains(req.name) {
+                return problem(.init(title: "conflict", status: 409, detail: "collection exists", instance: nil))
+            }
             let name = await admin.createCollection(req.name)
             struct Resp: Codable { let name: String; let recordsApprox: Int }
             return json(Resp(name: name, recordsApprox: 0), status: .created)
@@ -145,9 +154,20 @@ final class HTTPHandler: ChannelInboundHandler {
             guard let data = rawBody.data(using: .utf8), let def = try? dec.decode(AdminService.IndexDefinition.self, from: data) else {
                 return problem(.init(title: "invalid body", status: 400, detail: nil, instance: nil))
             }
+            let names = await admin.listCollections()
+            guard names.contains(c) else { return problem(.init(title: "not found", status: 404, detail: nil, instance: nil)) }
+            let existingIdx = await admin.listIndexNames(c)
+            if existingIdx.contains(def.name) {
+                return problem(.init(title: "conflict", status: 409, detail: "index exists", instance: nil))
+            }
             do {
                 let created = try await admin.defineIndex(collection: c, def: def)
                 return json(created, status: .created)
+            } catch let e as CollectionError {
+                switch e {
+                case .uniqueConstraintViolation(let index, let key):
+                    return problem(.init(title: "unique constraint", status: 409, detail: "\(index) key=\(key)", instance: nil))
+                }
             } catch {
                 return problem(.init(title: "index define", status: 500, detail: "failed to define index", instance: nil))
             }
@@ -172,6 +192,10 @@ final class HTTPHandler: ChannelInboundHandler {
                 guard let data = rawBody.data(using: .utf8), let req = try? dec.decode(Body.self, from: data) else {
                     return problem(.init(title: "invalid body", status: 400, detail: nil, instance: nil))
                 }
+                // Enforce path/body id consistency if provided
+                if let bid = req.id, bid != id {
+                    return problem(.init(title: "invalid body", status: 400, detail: "id in body must match path", instance: nil))
+                }
                 do {
                     let rid = req.id ?? id
                     let existed = try await admin.getRecord(collection: c, id: rid, snapshotId: nil) != nil
@@ -194,6 +218,10 @@ final class HTTPHandler: ChannelInboundHandler {
                 }
             case .DELETE:
                 do {
+                    // Return 404 if record does not exist
+                    if (try await admin.getRecord(collection: c, id: id)) == nil {
+                        return problem(.init(title: "not found", status: 404, detail: nil, instance: nil))
+                    }
                     try await admin.deleteRecord(collection: c, id: id)
                     return Response(status: .noContent, headers: [], body: Data())
                 } catch {
@@ -258,14 +286,19 @@ final class HTTPHandler: ChannelInboundHandler {
             do { return json(try await admin.compactionStatus()) } catch { return problem(.init(title: "status failed", status: 500, detail: nil, instance: nil)) }
         }
         if parts == ["compaction", "run"], method == .POST {
-            // Accept body: { mode: tick|full }
-            if let data = rawBody.data(using: .utf8),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let mode = obj["mode"] as? String, mode == "full" {
+            // Accept body: { mode: tick|full } and require a body for stricter adherence
+            guard let data = rawBody.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let mode = obj["mode"] as? String else {
+                return problem(.init(title: "invalid body", status: 400, detail: "missing mode", instance: nil))
+            }
+            if mode == "full" {
                 // No explicit full compaction entrypoint; best-effort schedule multiple ticks.
                 for _ in 0..<3 { await admin.compactionTick() }
-            } else {
+            } else if mode == "tick" {
                 await admin.compactionTick()
+            } else {
+                return problem(.init(title: "invalid body", status: 400, detail: "mode must be tick or full", instance: nil))
             }
             return Response(status: .accepted, headers: [], body: Data())
         }

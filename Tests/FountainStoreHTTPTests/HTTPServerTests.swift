@@ -332,4 +332,101 @@ final class HTTPServerTests: XCTestCase {
         let (gs2, _) = try await request("GET", recURL)
         XCTAssertEqual(gs2, 404)
     }
+
+    func test_create_collection_conflict_and_invalid_name() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 23080..<(23080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Create once
+        let name = "dupe"
+        let (s1, _) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+        XCTAssertEqual(s1, 201)
+        // Create again => 409
+        let (s2, d2) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+        XCTAssertEqual(s2, 409, String(data: d2, encoding: .utf8) ?? "")
+
+        // Invalid name => 400
+        let (s3, _) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": "bad name with spaces"]) 
+        XCTAssertEqual(s3, 400)
+    }
+
+    func test_index_define_404_and_409() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 24080..<(24080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // POST index on missing collection => 404
+        let (s404, _) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections/nope/indexes")!, json: ["name": "byTag", "kind": "multi", "keyPath": ".tag"]) 
+        XCTAssertEqual(s404, 404)
+
+        // Create collection
+        let name = "idxdupe"
+        _ = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+        // Define index twice => second 409
+        let idxURL = URL(string: "http://127.0.0.1:\(port)/collections/\(name)/indexes")!
+        let (s1, _) = try await request("POST", idxURL, json: ["name": "byTag", "kind": "multi", "keyPath": ".tag"]) 
+        XCTAssertEqual(s1, 201)
+        let (s2, _) = try await request("POST", idxURL, json: ["name": "byTag", "kind": "multi", "keyPath": ".tag"]) 
+        XCTAssertEqual(s2, 409)
+    }
+
+    func test_record_id_mismatch_and_delete_404() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 25080..<(25080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        let name = "recerrs"
+        _ = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+
+        // Mismatch id => 400
+        let url = URL(string: "http://127.0.0.1:\(port)/collections/\(name)/records/pathid")!
+        let (s1, _) = try await request("PUT", url, json: ["id": "bodyid", "data": [:]])
+        XCTAssertEqual(s1, 400)
+
+        // DELETE missing => 404
+        let (s2, _) = try await request("DELETE", URL(string: "http://127.0.0.1:\(port)/collections/\(name)/records/nope")!)
+        XCTAssertEqual(s2, 404)
+    }
+
+    func test_compaction_run_invalid_body_and_tick() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 26080..<(26080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        let runURL = URL(string: "http://127.0.0.1:\(port)/compaction/run")!
+        // Missing mode => 400
+        let (s1, _) = try await request("POST", runURL, json: [:])
+        XCTAssertEqual(s1, 400)
+        // Invalid mode => 400
+        let (s2, _) = try await request("POST", runURL, json: ["mode": "weird"]) 
+        XCTAssertEqual(s2, 400)
+        // tick => 202
+        let (s3, _) = try await request("POST", runURL, json: ["mode": "tick"]) 
+        XCTAssertEqual(s3, 202)
+    }
 }
