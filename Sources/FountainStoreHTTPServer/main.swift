@@ -305,10 +305,21 @@ final class HTTPHandler: ChannelInboundHandler {
         if parts.count == 3, parts[0] == "collections", parts[2] == "query", method == .POST {
             let c = parts[1]
             let snap = queryItem("snapshot")
-            guard let data = rawBody.data(using: .utf8), let q = try? dec.decode(AdminService.Query.self, from: data) else {
+            guard let data = rawBody.data(using: .utf8), var q = try? dec.decode(AdminService.Query.self, from: data) else {
                 return problem(.init(title: "invalid body", status: 400, detail: nil, instance: nil))
             }
             do {
+                // Normalize opaque tokens for queries
+                switch q {
+                case .indexEquals(let index, let key, let ps, let pt):
+                    let decPT = parseToken(pt)
+                    q = .indexEquals(index: index, key: key, pageSize: ps, pageToken: decPT)
+                case .scan(let prefix, let startAfter, let limit):
+                    let decSA = parseToken(startAfter)
+                    q = .scan(prefix: prefix, startAfter: decSA, limit: limit)
+                case .byId:
+                    break
+                }
                 let resp = try await admin.query(collection: c, query: q, snapshotId: snap)
                 // Map items to include metadata
                 let coll = c
@@ -321,7 +332,8 @@ final class HTTPHandler: ChannelInboundHandler {
                     }
                 }
                 struct Out: Codable { let items: [HTTPDocOut]; let nextPageToken: String? }
-                return json(Out(items: outItems, nextPageToken: resp.nextPageToken))
+                let nextTok = resp.nextPageToken.flatMap { makeToken(cursor: $0) }
+                return json(Out(items: outItems, nextPageToken: nextTok))
             } catch {
                 return problem(.init(title: "query failed", status: 500, detail: nil, instance: nil))
             }

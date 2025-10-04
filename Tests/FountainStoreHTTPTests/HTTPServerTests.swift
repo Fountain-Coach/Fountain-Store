@@ -204,6 +204,88 @@ final class HTTPServerTests: XCTestCase {
         } else { XCTFail("invalid json") }
     }
 
+    func test_query_tokens_are_opaque_when_api_key_is_set() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 31080..<(31080+1000))
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ".build/debug/FountainStoreHTTPServer")
+        p.environment = [
+            "PORT": String(port),
+            "FS_PATH": dir.path,
+            "FS_API_KEY": "secret"
+        ]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+        try p.run()
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Create collection and index with API key
+        let name = "opaque"
+        var creq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections")!)
+        creq.httpMethod = "POST"
+        creq.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        creq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        creq.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+        _ = try await URLSession.shared.data(for: creq)
+
+        var ireq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections/\(name)/indexes")!)
+        ireq.httpMethod = "POST"
+        ireq.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        ireq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        ireq.httpBody = try JSONSerialization.data(withJSONObject: ["name": "byTag", "kind": "multi", "keyPath": ".tag"])
+        _ = try await URLSession.shared.data(for: ireq)
+
+        for id in ["a1","a2","a3"] {
+            var preq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections/\(name)/records/\(id)")!)
+            preq.httpMethod = "PUT"
+            preq.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            preq.addValue("secret", forHTTPHeaderField: "x-api-key")
+            preq.httpBody = try JSONSerialization.data(withJSONObject: ["data": ["tag": "x"]])
+            _ = try await URLSession.shared.data(for: preq)
+        }
+
+        // Query page 1 (pageSize=2) using API key; token should not equal last id
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/collections/\(name)/query")!)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("secret", forHTTPHeaderField: "x-api-key")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "type": "indexEquals",
+            "index": "byTag",
+            "key": "x",
+            "pageSize": 2
+        ])
+        var (d1, r1) = try await URLSession.shared.data(for: req)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        var token: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            token = obj["nextPageToken"] as? String
+            XCTAssertNotNil(token)
+            // token should not directly equal last id (opaque)
+            XCTAssertNotEqual(token, items.last?["id"] as? String)
+        } else { XCTFail("invalid json") }
+
+        // Use token for next page
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "type": "indexEquals",
+            "index": "byTag",
+            "key": "x",
+            "pageSize": 2,
+            "pageToken": token as Any
+        ])
+        (d1, r1) = try await URLSession.shared.data(for: req)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 1)
+        } else { XCTFail("invalid json") }
+    }
+
     func test_scan_pagination_and_error_shapes() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
