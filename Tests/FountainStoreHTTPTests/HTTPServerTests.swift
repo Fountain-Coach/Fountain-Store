@@ -678,6 +678,107 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertTrue(text.contains("fountain_deletes_total"))
     }
 
+    func test_auth_health_401_and_ok_with_key() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 34080..<(34080+1000))
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ".build/debug/FountainStoreHTTPServer")
+        p.environment = [
+            "PORT": String(port),
+            "FS_PATH": dir.path,
+            "FS_API_KEY": "secret"
+        ]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+        try p.run()
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        // Wait for readiness with header
+        for _ in 0..<50 {
+            var r = URLRequest(url: healthURL)
+            r.httpMethod = "GET"
+            r.addValue("secret", forHTTPHeaderField: "x-api-key")
+            if let (_, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200 { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        // Without key => 401
+        let (s1, _) = try await request("GET", healthURL)
+        XCTAssertEqual(s1, 401)
+
+        // With key => 200
+        var r = URLRequest(url: healthURL)
+        r.httpMethod = "GET"
+        r.addValue("secret", forHTTPHeaderField: "x-api-key")
+        let (_, resp) = try await URLSession.shared.data(for: r)
+        XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func test_backups_pagination_tokens_opaque_with_auth() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 35080..<(35080+1000))
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ".build/debug/FountainStoreHTTPServer")
+        p.environment = [
+            "PORT": String(port),
+            "FS_PATH": dir.path,
+            "FS_API_KEY": "secret"
+        ]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+        try p.run()
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        // Wait with header
+        for _ in 0..<50 {
+            var r = URLRequest(url: healthURL)
+            r.httpMethod = "GET"
+            r.addValue("secret", forHTTPHeaderField: "x-api-key")
+            if let (_, resp) = try? await URLSession.shared.data(for: r), (resp as? HTTPURLResponse)?.statusCode == 200 { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        // Create 3 backups with header
+        for _ in 0..<3 {
+            var r = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/backups")!)
+            r.httpMethod = "POST"
+            r.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.addValue("secret", forHTTPHeaderField: "x-api-key")
+            r.httpBody = try JSONSerialization.data(withJSONObject: [:])
+            let (_, resp) = try await URLSession.shared.data(for: r)
+            XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 201)
+        }
+
+        // List backups page 1, pageSize=1
+        var listReq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/backups?pageSize=1")!)
+        listReq.httpMethod = "GET"
+        listReq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        var (d1, r1) = try await URLSession.shared.data(for: listReq)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        var next: String? = nil
+        var firstId: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any], let items = obj["items"] as? [[String: Any]] {
+            XCTAssertEqual(items.count, 1)
+            next = obj["nextPageToken"] as? String
+            firstId = items.first?["id"] as? String
+            XCTAssertNotNil(next)
+            XCTAssertNotEqual(next, firstId)
+        } else { XCTFail("invalid json") }
+
+        // Page 2 using token
+        listReq = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/backups?pageSize=1&pageToken=\(next!)")!)
+        listReq.httpMethod = "GET"
+        listReq.addValue("secret", forHTTPHeaderField: "x-api-key")
+        (d1, r1) = try await URLSession.shared.data(for: listReq)
+        XCTAssertEqual((r1 as? HTTPURLResponse)?.statusCode, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any], let items = obj["items"] as? [[String: Any]] {
+            XCTAssertEqual(items.count, 1)
+            // Ensure we advanced
+            XCTAssertNotEqual(items.first?["id"] as? String, firstId)
+        } else { XCTFail("invalid json") }
+    }
     func test_list_tokens_are_opaque_with_api_key() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
