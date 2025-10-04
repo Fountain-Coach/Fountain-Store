@@ -1,5 +1,7 @@
 Implementation audit for Fountain‑Store
 
+Note (2025-10-04): This document has been superseded by the dated audit in `docs/AUDIT_2025-10-04.md`, which reflects the current status quo and serves as guidance for forthcoming development. Key corrections include persistent MVCC across restarts (now implemented via sequence-bearing SSTable keys) and a stricter, paginated HTTP surface. The legacy content below remains for historical context.
+
 Introduction
 
 This audit compares the promises laid out in the project’s playbook ([agent.md](https://agent.md)) with the current implementation.  The playbook’s goal is to deliver a production‑ready embedded ACID store in pure Swift using an LSM architecture with MVCC snapshots, secondary indexes and optional full‑text and vector search modules ￼.  It imposes hard rules (pure Swift, single writer actor, ACID batch commits, crash‑safe manifest updates, atomic index updates and deterministic crash simulation points) and outlines milestones M0–M6 ￼.  This audit examines whether those promises are met and notes omissions or simplifications.

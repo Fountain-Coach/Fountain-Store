@@ -8,10 +8,11 @@ final class HTTPHandler: ChannelInboundHandler {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
     private let admin: AdminService
+    private let apiKey: String?
     private var bodyBuffer: ByteBuffer?
     private var lastHead: HTTPRequestHead?
 
-    init(admin: AdminService) { self.admin = admin }
+    init(admin: AdminService, apiKey: String?) { self.admin = admin; self.apiKey = apiKey }
 
     struct Response { let status: HTTPResponseStatus; let headers: [(String,String)]; let body: Data }
 
@@ -26,8 +27,8 @@ final class HTTPHandler: ChannelInboundHandler {
         case .end:
             let head = lastHead
             let reqBody = bodyBuffer?.getString(at: 0, length: bodyBuffer?.readableBytes ?? 0) ?? ""
-            Task { [admin] in
-                let resp = await HTTPHandler.route(admin: admin, head: head, rawBody: reqBody)
+            Task { [admin, apiKey] in
+                let resp = await HTTPHandler.route(admin: admin, apiKey: apiKey, head: head, rawBody: reqBody)
                 context.eventLoop.execute { self.writeResponse(resp, context: context) }
             }
         }
@@ -53,10 +54,21 @@ final class HTTPHandler: ChannelInboundHandler {
         return Response(status: HTTPResponseStatus(statusCode: p.status), headers: [("content-type", "application/problem+json")], body: data)
     }
 
-    static func route(admin: AdminService, head: HTTPRequestHead?, rawBody: String) async -> Response {
+    static func route(admin: AdminService, apiKey: String?, head: HTTPRequestHead?, rawBody: String) async -> Response {
         guard let head = head else { return Response(status: .badRequest, headers: [("content-type","text/plain")], body: Data("bad request".utf8)) }
         let method = head.method
         let uri = head.uri
+        // API key authentication if configured
+        if let required = apiKey, !required.isEmpty {
+            let hdrs = head.headers
+            let provided = hdrs.first(name: "x-api-key") ?? {
+                if let auth = hdrs.first(name: "authorization"), auth.lowercased().hasPrefix("bearer ") { return String(auth.dropFirst(7)) }
+                return nil
+            }()
+            if provided != required {
+                return problem(.init(title: "unauthorized", status: 401, detail: nil, instance: nil))
+            }
+        }
         let dec = JSONDecoder()
         let enc = JSONEncoder()
         enc.outputFormatting = []
@@ -364,12 +376,15 @@ struct ServerMain {
         let path = URL(fileURLWithPath: ProcessInfo.processInfo.environment["FS_PATH"] ?? FileManager.default.temporaryDirectory.appendingPathComponent("fs").path)
         let store = try await FountainStore.open(.init(path: path))
         let admin = AdminService(store: store)
+        // Rebuild dynamic (HTTP-defined) indexes after startup for HTTPDoc collections.
+        await admin.rebuildDynamicIndexes()
 
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(HTTPHandler(admin: admin), name: "HTTPHandler")
+                    let key = ProcessInfo.processInfo.environment["FS_API_KEY"]
+                    return channel.pipeline.addHandler(HTTPHandler(admin: admin, apiKey: key), name: "HTTPHandler")
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)

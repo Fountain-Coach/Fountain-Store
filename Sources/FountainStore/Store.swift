@@ -611,6 +611,11 @@ public actor FountainStore {
         return m.indexCatalog[collection] ?? []
     }
 
+    /// Public wrapper to persist or update an index definition in the manifest catalog.
+    public func saveIndexDefinition(collection: String, name: String, kind: String, field: String? = nil) async {
+        try? await persistIndexDefinition(collection: collection, name: name, kind: kind, field: field)
+    }
+
     // MARK: - Backups
     public struct BackupRef: Sendable, Hashable, Codable {
         public let id: String

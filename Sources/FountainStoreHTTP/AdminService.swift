@@ -90,8 +90,26 @@ public actor AdminService {
         }
         // Core store lacks dynamic unique; use multiValues for both and persist whatever core records
         try await coll.define(.init(name: def.name, kind: .multiValues(extractor)))
-        _ = collection // silence unused when compiled without extra uses
+        // Persist index definition with keyPath for later rebuilds.
+        await store.saveIndexDefinition(collection: collection, name: def.name, kind: def.kind, field: def.keyPath)
         return def
+    }
+
+    /// Rebuild dynamic (HTTP-defined) indexes after startup based on manifest catalog.
+    public func rebuildDynamicIndexes() async {
+        let collections = await store.listCollections()
+        for c in collections {
+            let defs = (try? await store.listIndexDefinitions(c)) ?? []
+            for d in defs {
+                guard let field = d.field else { continue }
+                // Only rebuild multi (dynamic) indexes for HTTPDoc collections.
+                let coll = await store.collection(c, of: HTTPDoc.self)
+                let extractor: @Sendable (HTTPDoc) -> [String] = { doc in
+                    AdminService.extractStrings(from: doc, by: field)
+                }
+                try? await coll.define(.init(name: d.name, kind: .multiValues(extractor)))
+            }
+        }
     }
 
     private static func extractStrings(from doc: HTTPDoc, by keyPath: String) -> [String] {

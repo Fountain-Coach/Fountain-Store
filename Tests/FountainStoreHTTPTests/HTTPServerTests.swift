@@ -333,6 +333,7 @@ final class HTTPServerTests: XCTestCase {
         XCTAssertEqual(gs2, 404)
     }
 
+
     func test_create_collection_conflict_and_invalid_name() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
