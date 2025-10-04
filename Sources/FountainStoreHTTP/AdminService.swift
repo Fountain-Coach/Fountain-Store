@@ -8,6 +8,17 @@ public struct HTTPDoc: Codable, Identifiable, Equatable, Sendable {
     public init(id: String, data: AnyJSON, version: String? = nil) { self.id = id; self.data = data; self.version = version }
 }
 
+public struct HTTPDocOut: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    public var data: AnyJSON
+    public var version: String?
+    public var sequence: UInt64?
+    public var deleted: Bool?
+    public init(id: String, data: AnyJSON, version: String? = nil, sequence: UInt64? = nil, deleted: Bool? = nil) {
+        self.id = id; self.data = data; self.version = version; self.sequence = sequence; self.deleted = deleted
+    }
+}
+
 public actor AdminService {
     private let store: FountainStore
     public init(store: FountainStore) { self.store = store }
@@ -128,6 +139,15 @@ public actor AdminService {
         let coll = await store.collection(collection, of: HTTPDoc.self)
         let snap = snapshotId.flatMap { snapshots[$0] }
         return try await coll.get(id: id, snapshot: snap)
+    }
+    public func getRecordWithMeta(collection: String, id: String, snapshotId: String? = nil) async throws -> HTTPDocOut? {
+        let coll = await store.collection(collection, of: HTTPDoc.self)
+        let snap = snapshotId.flatMap { snapshots[$0] }
+        if let doc = try await coll.get(id: id, snapshot: snap) {
+            let seq = await coll.lastSequence(of: doc.id, snapshot: snap)
+            return HTTPDocOut(id: doc.id, data: doc.data, version: doc.version, sequence: seq, deleted: false)
+        }
+        return nil
     }
     public func deleteRecord(collection: String, id: String) async throws {
         let coll = await store.collection(collection, of: HTTPDoc.self)
@@ -286,7 +306,7 @@ public actor AdminService {
         public struct OpResult: Codable, Sendable, Equatable {
             public let opIndex: Int
             public let status: String // ok | error
-            public let record: HTTPDoc?
+            public let record: HTTPDocOut?
             public let error: Problem?
         }
         public let committedSequence: UInt64
@@ -311,6 +331,7 @@ public actor AdminService {
     public func commitTransaction(_ tx: Transaction) async -> TransactionResult {
         var storeOps: [FountainStore.StoreOp] = []
         var results: [TransactionResult.OpResult] = []
+        var toFill: [(collection: String, id: String, resultIndex: Int)] = []
         // Build store ops and also perform index definition side-effects immediately.
         for (i, op) in tx.operations.enumerated() {
             switch op {
@@ -319,7 +340,9 @@ public actor AdminService {
                     let coll = await store.collection(collection, of: HTTPDoc.self)
                     let op = try coll.makeStoreOpPut(record)
                     storeOps.append(op)
-                    results.append(.init(opIndex: i, status: "ok", record: record, error: nil))
+                    let out = HTTPDocOut(id: record.id, data: record.data, version: record.version, sequence: nil, deleted: false)
+                    results.append(.init(opIndex: i, status: "ok", record: out, error: nil))
+                    toFill.append((collection, record.id, results.count - 1))
                 } catch {
                     results.append(.init(opIndex: i, status: "error", record: nil, error: Problem(title: "encode", status: 500, detail: "failed to encode record", instance: nil)))
                 }
@@ -357,7 +380,18 @@ public actor AdminService {
         } catch {
             return TransactionResult(committedSequence: await store.snapshot().sequence, results: [TransactionResult.OpResult(opIndex: -1, status: "error", record: nil, error: Problem(title: "commit", status: 500, detail: "unknown error", instance: nil))])
         }
-        return TransactionResult(committedSequence: await store.snapshot().sequence, results: results)
+        let committed = await store.snapshot().sequence
+        // Fill in per-record sequences post-commit
+        for (collName, id, idx) in toFill {
+            let coll = await store.collection(collName, of: HTTPDoc.self)
+            let seq = await coll.lastSequence(of: id, snapshot: nil)
+            if let seq = seq, idx < results.count, let rec = results[idx].record {
+                let newRec = HTTPDocOut(id: rec.id, data: rec.data, version: rec.version, sequence: seq, deleted: false)
+                let r = results[idx]
+                results[idx] = .init(opIndex: r.opIndex, status: r.status, record: newRec, error: r.error)
+            }
+        }
+        return TransactionResult(committedSequence: committed, results: results)
     }
 
     // MARK: - Snapshots

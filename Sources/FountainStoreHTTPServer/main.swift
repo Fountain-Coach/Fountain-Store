@@ -98,10 +98,16 @@ final class HTTPHandler: ChannelInboundHandler {
         // Collections list/create
         if parts == ["collections"], method == .GET {
             struct RespItem: Codable { let name: String; let recordsApprox: Int }
-            struct Resp: Codable { let items: [RespItem] }
+            struct Resp: Codable { let items: [RespItem]; let nextPageToken: String? }
             let st = await admin.status()
-            let items = st.collections.map { RespItem(name: $0.name, recordsApprox: $0.recordsApprox) }
-            return json(Resp(items: items))
+            var items = st.collections.map { RespItem(name: $0.name, recordsApprox: $0.recordsApprox) }.sorted { $0.name < $1.name }
+            let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
+            let token = queryItem("pageToken")
+            if let t = token { items = Array(items.drop(while: { $0.name <= t })) }
+            let limit = pageSize > 0 ? pageSize : items.count
+            let page = Array(items.prefix(limit))
+            let next = (limit < items.count) ? page.last?.name : nil
+            return json(Resp(items: page, nextPageToken: next))
         }
         if parts == ["collections"], method == .POST {
             struct CreateReq: Codable { let name: String; let version: String? }
@@ -143,11 +149,18 @@ final class HTTPHandler: ChannelInboundHandler {
         // Indexes list/define
         if parts.count == 3, parts[0] == "collections", parts[2] == "indexes", method == .GET {
             let c = parts[1]
-            struct Resp: Codable { let items: [AdminService.IndexDefinition] }
+            struct Resp: Codable { let items: [AdminService.IndexDefinition]; let nextPageToken: String? }
             let names = await admin.listCollections()
             guard names.contains(c) else { return problem(.init(title: "not found", status: 404, detail: nil, instance: nil)) }
-            let idx = await admin.listIndexDefinitions(c)
-            return json(Resp(items: idx))
+            var idx = await admin.listIndexDefinitions(c)
+            idx.sort { $0.name < $1.name }
+            let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
+            let token = queryItem("pageToken")
+            if let t = token { idx = Array(idx.drop(while: { $0.name <= t })) }
+            let limit = pageSize > 0 ? pageSize : idx.count
+            let page = Array(idx.prefix(limit))
+            let next = (limit < idx.count) ? page.last?.name : nil
+            return json(Resp(items: page, nextPageToken: next))
         }
         if parts.count == 3, parts[0] == "collections", parts[2] == "indexes", method == .POST {
             let c = parts[1]
@@ -179,7 +192,7 @@ final class HTTPHandler: ChannelInboundHandler {
             case .GET:
                 do {
                     let snap = queryItem("snapshot")
-                    if let v = try await admin.getRecord(collection: c, id: id, snapshotId: snap) {
+                    if let v = try await admin.getRecordWithMeta(collection: c, id: id, snapshotId: snap) {
                         return json(v)
                     } else {
                         return problem(.init(title: "not found", status: 404, detail: nil, instance: nil))
@@ -201,10 +214,12 @@ final class HTTPHandler: ChannelInboundHandler {
                     let existed = try await admin.getRecord(collection: c, id: rid, snapshotId: nil) != nil
                     let v = try await admin.putRecord(collection: c, id: rid, data: req.data)
                     if existed {
-                        return json(v, status: .ok)
+                        let out = try await admin.getRecordWithMeta(collection: c, id: rid, snapshotId: nil) ?? HTTPDocOut(id: v.id, data: v.data, version: v.version, sequence: nil, deleted: false)
+                        return json(out, status: .ok)
                     } else {
                         // Encode body manually to attach Location header
-                        let data = (try? JSONEncoder().encode(v)) ?? Data("{}".utf8)
+                        let out = try await admin.getRecordWithMeta(collection: c, id: rid, snapshotId: nil) ?? HTTPDocOut(id: v.id, data: v.data, version: v.version, sequence: nil, deleted: false)
+                        let data = (try? JSONEncoder().encode(out)) ?? Data("{}".utf8)
                         let loc = "/collections/\(c)/records/\(rid)"
                         return Response(status: .created, headers: [("content-type", "application/json"), ("Location", loc)], body: data)
                     }
@@ -240,16 +255,40 @@ final class HTTPHandler: ChannelInboundHandler {
             }
             do {
                 let resp = try await admin.query(collection: c, query: q, snapshotId: snap)
-                return json(resp)
+                // Map items to include metadata
+                let coll = c
+                var outItems: [HTTPDocOut] = []
+                for item in resp.items {
+                    if let withMeta = try? await admin.getRecordWithMeta(collection: coll, id: item.id, snapshotId: snap) {
+                        outItems.append(withMeta)
+                    } else {
+                        outItems.append(HTTPDocOut(id: item.id, data: item.data, version: item.version, sequence: nil, deleted: false))
+                    }
+                }
+                struct Out: Codable { let items: [HTTPDocOut]; let nextPageToken: String? }
+                return json(Out(items: outItems, nextPageToken: resp.nextPageToken))
             } catch {
                 return problem(.init(title: "query failed", status: 500, detail: nil, instance: nil))
             }
         }
         // Backups
         if parts == ["backups"], method == .GET {
-            let refs = await admin.underlyingStore().listBackups()
-            struct Resp: Codable { let items: [FountainStore.BackupRef] }
-            return json(Resp(items: refs))
+            var refs = await admin.underlyingStore().listBackups()
+            // Sort newest first by createdAt, but use id for token (stable order with tie-breaker)
+            refs.sort { (a, b) in
+                if let ad = ISO8601DateFormatter().date(from: a.createdAt), let bd = ISO8601DateFormatter().date(from: b.createdAt), ad != bd {
+                    return ad > bd
+                }
+                return a.id > b.id
+            }
+            let pageSize = Int(queryItem("pageSize") ?? "0") ?? 0
+            let token = queryItem("pageToken")
+            if let t = token, let pos = refs.firstIndex(where: { $0.id == t }) { refs = Array(refs.dropFirst(pos+1)) }
+            let limit = pageSize > 0 ? pageSize : refs.count
+            let page = Array(refs.prefix(limit))
+            let next = (limit < refs.count) ? page.last?.id : nil
+            struct Resp: Codable { let items: [FountainStore.BackupRef]; let nextPageToken: String? }
+            return json(Resp(items: page, nextPageToken: next))
         }
         if parts == ["backups"], method == .POST {
             struct Req: Codable { let note: String? }

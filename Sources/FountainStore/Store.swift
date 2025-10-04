@@ -774,6 +774,13 @@ public actor Collection<C: Codable & Identifiable> where C.ID: Codable & Hashabl
         self.store = store
     }
 
+    /// Returns the last committed sequence number for the given id, respecting an optional snapshot.
+    public func lastSequence(of id: C.ID, snapshot: Snapshot? = nil) async -> UInt64? {
+        let limit = snapshot?.sequence ?? UInt64.max
+        guard let versions = data[id] else { return nil }
+        return versions.last(where: { $0.0 <= limit })?.0
+    }
+
     private func encodeKey(_ id: C.ID) throws -> Data {
         var data = Data(name.utf8)
         data.append(0)

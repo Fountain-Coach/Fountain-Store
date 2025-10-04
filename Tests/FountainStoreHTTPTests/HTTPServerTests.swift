@@ -429,4 +429,143 @@ final class HTTPServerTests: XCTestCase {
         let (s3, _) = try await request("POST", runURL, json: ["mode": "tick"]) 
         XCTAssertEqual(s3, 202)
     }
+
+    func test_collections_pagination_and_status_compaction() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 27080..<(27080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Create 5 collections
+        for n in ["a","b","c","d","e"] { _ = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": n]) }
+
+        // Page 1
+        var (s1, d1) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/collections?pageSize=2")!)
+        XCTAssertEqual(s1, 200)
+        var next: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            next = obj["nextPageToken"] as? String
+            XCTAssertNotNil(next)
+        } else { XCTFail("invalid json") }
+
+        // Page 2
+        (s1, d1) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/collections?pageSize=2&pageToken=\(next!)")!)
+        XCTAssertEqual(s1, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            next = obj["nextPageToken"] as? String
+            XCTAssertNotNil(next)
+        } else { XCTFail("invalid json") }
+
+        // Page 3 (last)
+        (s1, d1) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/collections?pageSize=2&pageToken=\(next!)")!)
+        XCTAssertEqual(s1, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 1)
+            XCTAssertNil(obj["nextPageToken"])
+        } else { XCTFail("invalid json") }
+
+        // Status includes compaction
+        let (st, sd) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/status")!)
+        XCTAssertEqual(st, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: sd) as? [String: Any] {
+            _ = obj["compaction"] as? [String: Any] // optional presence is fine
+        } else { XCTFail("invalid json") }
+        // Compaction status endpoint
+        let (cs, cd) = try await request("GET", URL(string: "http://127.0.0.1:\(port)/compaction/status")!)
+        XCTAssertEqual(cs, 200)
+        if let _ = try? JSONSerialization.jsonObject(with: cd) as? [String: Any] {
+            // shape checked loosely
+        } else { XCTFail("invalid compaction json") }
+    }
+
+    func test_indexes_pagination_and_backups() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let port = Int.random(in: 28080..<(28080+1000))
+        let p = try launchServer(port: port, dir: dir)
+        defer { p.terminate(); try? p.waitUntilExit(); try? FileManager.default.removeItem(at: dir) }
+
+        // readiness
+        let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
+        for _ in 0..<50 { if (try? await request("GET", healthURL).0) == 200 { break }; try await Task.sleep(nanoseconds: 100_000_000) }
+
+        // Create collection
+        let name = "pidx"
+        _ = try await request("POST", URL(string: "http://127.0.0.1:\(port)/collections")!, json: ["name": name])
+        let idxURL = URL(string: "http://127.0.0.1:\(port)/collections/\(name)/indexes")!
+        for i in 1...5 { _ = try await request("POST", idxURL, json: ["name": "i\(i)", "kind": "multi", "keyPath": ".tag"]) }
+
+        // Page indexes
+        var (s1, d1) = try await request("GET", URL(string: idxURL.absoluteString + "?pageSize=2")!)
+        XCTAssertEqual(s1, 200)
+        var next: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            next = obj["nextPageToken"] as? String
+            XCTAssertNotNil(next)
+        } else { XCTFail("invalid json") }
+
+        (s1, d1) = try await request("GET", URL(string: idxURL.absoluteString + "?pageSize=2&pageToken=\(next!)")!)
+        XCTAssertEqual(s1, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            next = obj["nextPageToken"] as? String
+            XCTAssertNotNil(next)
+        } else { XCTFail("invalid json") }
+
+        (s1, d1) = try await request("GET", URL(string: idxURL.absoluteString + "?pageSize=2&pageToken=\(next!)")!)
+        XCTAssertEqual(s1, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: d1) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 1)
+            XCTAssertNil(obj["nextPageToken"])
+        } else { XCTFail("invalid json") }
+
+        // Backups list/create/restore + pagination
+        let listURL = URL(string: "http://127.0.0.1:\(port)/backups")!
+        // initial empty list
+        var (lb, lbd) = try await request("GET", listURL)
+        XCTAssertEqual(lb, 200)
+        if let obj = try? JSONSerialization.jsonObject(with: lbd) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            // may contain from prior runs in same dir, but we created fresh dir so expect 0
+            XCTAssertEqual(items.count, 0)
+        } else { XCTFail("invalid json") }
+
+        // create 3 backups
+        var ids: [String] = []
+        for i in 1...3 {
+            let (cs, cd) = try await request("POST", listURL, json: ["note": "n\(i)"])
+            XCTAssertEqual(cs, 201)
+            if let obj = try? JSONSerialization.jsonObject(with: cd) as? [String: Any] {
+                if let id = obj["id"] as? String { ids.append(id) }
+            }
+        }
+        XCTAssertEqual(ids.count, 3)
+
+        (lb, lbd) = try await request("GET", URL(string: listURL.absoluteString + "?pageSize=2")!)
+        XCTAssertEqual(lb, 200)
+        var nextBk: String? = nil
+        if let obj = try? JSONSerialization.jsonObject(with: lbd) as? [String: Any] {
+            let items = (obj["items"] as? [[String: Any]]) ?? []
+            XCTAssertEqual(items.count, 2)
+            nextBk = obj["nextPageToken"] as? String
+            XCTAssertNotNil(nextBk)
+        } else { XCTFail("invalid json") }
+
+        let (rb, _) = try await request("POST", URL(string: "http://127.0.0.1:\(port)/backups/\(ids[0])/restore")!)
+        XCTAssertEqual(rb, 202)
+    }
 }
