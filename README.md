@@ -10,6 +10,11 @@ See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
 Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
 
+## How things have grown (plain-language)
+
+- **First release (version 0.1.0):** We put together a trustworthy digital cabinet that could take in notes, stash them safely on your computer, and bring them all back the next time you opened the door—no drama, even if the lights flickered.
+- **Current release (version 0.2.0):** That same cabinet now greets you with clearer answers when you add or look up something, lets you flip through long lists without losing your spot, shows live gauges so you know how it is feeling, offers an optional passcode for extra peace of mind, keeps its own cross-reference cards in sync, and quietly tidies up the shelves in the background so you don’t have to.
+
 ## What’s New (0.2.0)
 
 - Enriched record responses (sequence/deleted); PUT returns 201/200 with Location
