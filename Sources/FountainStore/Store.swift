@@ -412,9 +412,11 @@ public actor FountainStore {
     }
 
     internal func applyBackpressureIfNeeded() async {
-        // Simple heuristic: if compaction debt is high, yield briefly.
+        // Scale backpressure sleep with compaction debt to smooth spikes.
         if let st = try? await compactor.status(), st.debtBytes > (512 * 1024) {
-            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+            let kb = max(1, st.debtBytes / 1024)
+            let factor = min(5_000_000, kb * 1000) // up to 5ms
+            try? await Task.sleep(nanoseconds: UInt64(factor))
         }
     }
     

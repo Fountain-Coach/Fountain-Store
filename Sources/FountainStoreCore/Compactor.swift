@@ -41,15 +41,24 @@ public actor Compactor {
 
         do {
             var m = try await manifest.load()
+            let fm = FileManager.default
             let handles = m.tables.map { SSTableHandle(id: $0.key, path: $0.value) }
             guard handles.count > 1 else { return }
+
+            // Compute levels by size (same heuristic as status)
+            let base: Int64 = 256 * 1024
+            var levelsMap: [UUID: Int] = [:]
+            for (id, url) in m.tables {
+                let sz = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+                let lvl: Int
+                if sz <= 0 { lvl = 0 } else { var t = max(Int64(1), sz / base); var l = 0; while t > 1 { t >>= 1; l += 1 }; lvl = l }
+                levelsMap[id] = lvl
+            }
 
             // Determine key ranges for every table.
             var ranges: [(SSTableHandle, Data, Data)] = []
             for h in handles {
-                if let r = try keyRange(of: h) {
-                    ranges.append((h, r.0, r.1))
-                }
+                if let r = try keyRange(of: h) { ranges.append((h, r.0, r.1)) }
             }
             guard !ranges.isEmpty else { return }
 
@@ -58,54 +67,40 @@ public actor Compactor {
             var groups: [[(SSTableHandle, Data, Data)]] = []
             var current: [(SSTableHandle, Data, Data)] = []
             var currentEnd: Data? = nil
-            func maxData(_ a: Data, _ b: Data) -> Data {
-                return a.lexicographicallyPrecedes(b) ? b : a
-            }
+            func maxData(_ a: Data, _ b: Data) -> Data { a.lexicographicallyPrecedes(b) ? b : a }
             for r in ranges {
-                if current.isEmpty {
-                    current = [r]
-                    currentEnd = r.2
-                    continue
-                }
-                if let end = currentEnd, !end.lexicographicallyPrecedes(r.1) {
-                    current.append(r)
-                    currentEnd = maxData(end, r.2)
-                } else {
-                    groups.append(current)
-                    current = [r]
-                    currentEnd = r.2
-                }
+                if current.isEmpty { current = [r]; currentEnd = r.2; continue }
+                if let end = currentEnd, !end.lexicographicallyPrecedes(r.1) { current.append(r); currentEnd = maxData(end, r.2) }
+                else { groups.append(current); current = [r]; currentEnd = r.2 }
             }
             if !current.isEmpty { groups.append(current) }
 
-            // Merge each overlapping group into a new SSTable.
+            // Prefer L0-only groups when L0 count is high, limit merges per tick.
+            let maxMerges = 2
+            let l0Groups = groups.filter { grp in grp.allSatisfy { levelsMap[$0.0.id] == 0 } && grp.count > 1 }
+            let l0Count = levelsMap.values.filter { $0 == 0 }.count
+            var worklist: [[(SSTableHandle, Data, Data)]] = []
+            if l0Count > 4, !l0Groups.isEmpty {
+                // Pick up to maxMerges L0 groups with largest sizes (approx by group count)
+                worklist = Array(l0Groups.sorted { $0.count > $1.count }.prefix(maxMerges))
+            } else {
+                worklist = Array(groups.filter { $0.count > 1 }.prefix(maxMerges))
+            }
+
             var pending = 0
-            for g in groups where g.count > 1 {
+            for g in worklist where g.count > 1 {
                 pending += (g.count - 1)
                 var allEntries: [(TableKey, TableValue)] = []
-                for (h, _, _) in g {
-                    let entries = try readEntries(h)
-                    allEntries.append(contentsOf: entries)
-                }
-
-                // Merge and deduplicate by key (newer wins).
+                for (h, _, _) in g { allEntries.append(contentsOf: try readEntries(h)) }
                 allEntries.sort { $0.0.raw.lexicographicallyPrecedes($1.0.raw) }
                 var merged: [(TableKey, TableValue)] = []
                 var lastKey: Data? = nil
                 for e in allEntries {
-                    if let lk = lastKey, lk == e.0.raw {
-                        merged[merged.count - 1] = e
-                    } else {
-                        merged.append(e)
-                        lastKey = e.0.raw
-                    }
+                    if let lk = lastKey, lk == e.0.raw { merged[merged.count - 1] = e }
+                    else { merged.append(e); lastKey = e.0.raw }
                 }
-
-                // Write merged table.
                 let outURL = directory.appendingPathComponent(UUID().uuidString + ".sst")
                 let newHandle = try await SSTable.create(at: outURL, entries: merged)
-
-                // Update manifest and remove old files.
                 for (h, _, _) in g {
                     m.tables.removeValue(forKey: h.id)
                     try? FileManager.default.removeItem(at: h.path)
