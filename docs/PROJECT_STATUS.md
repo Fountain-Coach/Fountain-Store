@@ -31,5 +31,5 @@ This document is the single development‑tracking reference. All other prior pl
 - P3: Observability improvements (latency histograms; fuller Prometheus endpoint).
 
 ## Release Notes
-- Latest: v0.2.0‑beta.1 — https://github.com/Fountain-Coach/Fountain-Store/releases/tag/v0.2.0-beta.1
+- Latest: v0.2.0 — https://github.com/Fountain-Coach/Fountain-Store/releases/tag/v0.2.0
 - See the repository releases/tags for the full CHANGELOG. (Historical docs moved under docs/LEGACY.)

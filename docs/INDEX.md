@@ -1,7 +1,7 @@
 # FountainStore Documentation Index
 
 Current
-- Latest Release: https://github.com/Fountain-Coach/Fountain-Store/releases/tag/v0.2.0-beta.1
+- Latest Release: https://github.com/Fountain-Coach/Fountain-Store/releases/tag/v0.2.0
 - OpenAPI Spec (source of truth): openapi-fountainstore.yaml
 - Project Status (single development-tracking doc): PROJECT_STATUS.md
  - Narrative Overview: LECTURE.md

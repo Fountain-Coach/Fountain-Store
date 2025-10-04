@@ -10,7 +10,7 @@ See `agent.md` for Codex instructions and `docs/` for the full blueprint.
 
 Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in CI with JSON results uploaded as artifacts.
 
-## What’s New (0.2.0‑beta)
+## What’s New (0.2.0)
 
 - Enriched record responses (sequence/deleted); PUT returns 201/200 with Location
 - Opaque pagination tokens (HMAC‑signed when API key configured) for lists/queries
@@ -48,7 +48,7 @@ Endpoints (minimal subset):
 - `GET /status` – store status
 - `GET /metrics` – metrics snapshot
 
-Docs: OpenAPI is the source of truth (`docs/openapi-fountainstore.yaml`). The single development‑tracking doc is `docs/PROJECT_STATUS.md`. See `docs/INDEX.md` for the map.
+Docs: OpenAPI is the source of truth (`docs/openapi-fountainstore.yaml`). The single development‑tracking doc is `docs/PROJECT_STATUS.md`. See `docs/INDEX.md` for the map. For an extended narrative overview, read `docs/LECTURE.md`.
 
 #### HTTP Examples
 
@@ -179,7 +179,7 @@ FountainStore is distributed as a Swift Package. To add it to your project, incl
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Fountain-Coach/Fountain-Store.git", from: "0.1.0")
+    .package(url: "https://github.com/Fountain-Coach/Fountain-Store.git", from: "0.2.0")
 ]
 ```
 
