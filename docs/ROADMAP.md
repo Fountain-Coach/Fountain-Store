@@ -1,5 +1,5 @@
 
-# Roadmap
+# Roadmap (current)
 
 - [x] M1: KV core
 - [x] M2: Compaction & snapshots
@@ -10,13 +10,17 @@
 
 vNext
 
-- [ ] M7: Persistent MVCC history across restarts (on-disk sequences, tombstones, retention)
-- [ ] M8: Transactional WAL frames + store-level multi-collection batch
-- [ ] M9: Index persistence and background rebuild (FTS/Vector optional snapshots)
-- [ ] M10: SSTable integrity (per-block CRC) and explicit bloom serialization
-- [ ] M11: Leveled compaction with status/metrics and backpressure
-- [ ] M12: Read caching honoring `cacheBytes` with hit/miss metrics
-- [ ] M13: Optional HTTP surface (admin + observability subset of OpenAPI)
-- [ ] M14: Backups/restore (manifest snapshotting and restore tool)
-- [ ] M15: WAL segmentation/rotation and GC
-- [ ] M16: Index expressiveness (arrays/closures) and improved scans
+- [x] M7: Persistent MVCC across restarts (sequence-bearing SSTable keys)
+- [x] M8: Transactional WAL frames + store-level batch (replay-time support; API exposed)
+- [x] M9: Index persistence catalog + dynamic index rebuild for HTTPDoc; typed auto-rebuild pending
+- [x] M10: SSTable integrity (per-block CRC) and bloom serialization
+- [~] M11: Leveled compaction preference + backpressure (initial MVP; full leveling TBD)
+- [x] M12: Read caching honoring `cacheBytes`
+- [x] M13: Optional HTTP surface (admin + observability subset of OpenAPI) with pagination and metadata
+- [x] M14: Backups/restore (manifest snapshotting and restore)
+- [x] M15: WAL segmentation/rotation and GC
+- [x] M16: Index expressiveness (arrays/closures) and improved scans
+
+Notes
+- Full leveled compaction and scheduling remain as follow-ups.
+- Typed indexes do not auto-rebuild at open; dynamic HTTPDoc indexes do.

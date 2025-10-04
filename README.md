@@ -37,7 +37,8 @@ Endpoints (minimal subset):
 - `GET /status` – store status
 - `GET /metrics` – metrics snapshot
 
-Note: the server is a minimal wiring and can be extended to cover the full OpenAPI in `docs/openapi-fountainstore.yaml`.
+Docs index: See `docs/INDEX.md` for the full documentation map (Vision, Architecture, OpenAPI, Audit, Roadmap, Test Plan, Migration, Changelog).
+The HTTP surface is aligned with `docs/openapi-fountainstore.yaml` and covered by E2E tests.
 
 #### HTTP Examples
 
