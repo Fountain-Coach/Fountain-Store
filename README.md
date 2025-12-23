@@ -1,7 +1,7 @@
 
 # FountainStore
 
-**Status:** 0.2.0‑beta — stable engine, enriched HTTP surface (see What’s New) and unified docs.
+**Status:** 0.2.1‑beta — stable engine, enriched HTTP surface (see What’s New) and unified docs.
 
 FountainStore is a **pure‑Swift**, embedded, ACID persistence engine for FountainAI. The engine persists data to disk via a WAL and SSTables and reloads state on startup. It follows an LSM-style architecture (WAL → Memtable → SSTables) with MVCC snapshots,
 secondary indexes, and optional FTS and Vector modules, all with zero non‑Swift dependencies.
@@ -13,7 +13,11 @@ Benchmarks for put/get throughput live in `FountainStoreBenchmarks` and run in C
 ## How things have grown (plain-language)
 
 - **First release (version 0.1.0):** We put together a trustworthy digital cabinet that could take in notes, stash them safely on your computer, and bring them all back the next time you opened the door—no drama, even if the lights flickered.
-- **Current release (version 0.2.0):** That same cabinet now greets you with clearer answers when you add or look up something, lets you flip through long lists without losing your spot, shows live gauges so you know how it is feeling, offers an optional passcode for extra peace of mind, keeps its own cross-reference cards in sync, and quietly tidies up the shelves in the background so you don’t have to.
+- **Current release (version 0.2.1):** That same cabinet now greets you with clearer answers when you add or look up something, lets you flip through long lists without losing your spot, shows live gauges so you know how it is feeling, offers an optional passcode for extra peace of mind, keeps its own cross-reference cards in sync, and quietly tidies up the shelves in the background so you don’t have to.
+
+## What’s New (0.2.1)
+
+- MCP stdio server (`FountainStoreMCP`) that exposes the full admin tool surface for local automation.
 
 ## What’s New (0.2.0)
 
@@ -54,6 +58,22 @@ Endpoints (minimal subset):
 - `GET /metrics` – metrics snapshot
 
 Docs: OpenAPI is the source of truth (`docs/openapi-fountainstore.yaml`). The single development‑tracking doc is `docs/PROJECT_STATUS.md`. See `docs/INDEX.md` for the map. For an extended narrative overview, read `docs/LECTURE.md`.
+
+### Optional MCP Server
+
+An optional `FountainStoreMCP` executable exposes the full admin tool set over MCP stdio:
+
+```
+swift run FountainStoreMCP
+# or
+STORE_PATH=/tmp/fs STORE_DEFAULT_SCAN_LIMIT=200 swift run FountainStoreMCP
+```
+
+Environment knobs:
+- `STORE_PATH` (default `.fountainstore-local`)
+- `STORE_CACHE_BYTES` (default `67108864`)
+- `STORE_DEFAULT_SCAN_LIMIT` (default `100`)
+- `STORE_WAL_SEGMENT_BYTES` (default `4194304`)
 
 #### HTTP Examples
 
@@ -184,7 +204,7 @@ FountainStore is distributed as a Swift Package. To add it to your project, incl
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Fountain-Coach/Fountain-Store.git", from: "0.2.0")
+    .package(url: "https://github.com/Fountain-Coach/Fountain-Store.git", from: "0.2.1")
 ]
 ```
 

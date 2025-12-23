@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "FountainVector", targets: ["FountainVector"]),
         .library(name: "FountainStoreHTTP", targets: ["FountainStoreHTTP"]),
         .executable(name: "FountainStoreHTTPServer", targets: ["FountainStoreHTTPServer"]),
+        .executable(name: "FountainStoreMCP", targets: ["FountainStoreMCP"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.59.0"),
@@ -32,6 +33,7 @@ let package = Package(
             .product(name: "SecretStore", package: "swift-secretstore"),
             .product(name: "Crypto", package: "swift-crypto")
         ]),
+        .executableTarget(name: "FountainStoreMCP", dependencies: ["FountainStoreHTTP", "FountainStore"]),
         .testTarget(name: "FountainStoreTests", dependencies: ["FountainStore", "FountainFTS", "FountainVector"]),
         .testTarget(name: "FountainStoreHTTPTests", dependencies: ["FountainStoreHTTP"]),
         .executableTarget(name: "FountainStoreBenchmarks", dependencies: ["FountainStore"]),
